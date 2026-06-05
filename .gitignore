@@ -1,0 +1,11 @@
+.venv/
+.venv310/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+.env
+google-credentials.json
+dist/
+build/
+*.spec.bak
+models/

@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "ORBYNECUE Assistant",
+  "version": "0.1.0",
+  "description": "Browser-native interview and meeting assistant with knowledge upload and voice capture.",
+  "permissions": ["sidePanel", "storage"],
+  "action": {
+    "default_title": "Open ORBYNECUE"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  }
+}

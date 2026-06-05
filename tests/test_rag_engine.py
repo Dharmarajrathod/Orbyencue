@@ -1,0 +1,100 @@
+import numpy as np
+
+import rag_engine
+
+
+def test_cosine_similarity_handles_zero_vectors():
+    assert rag_engine.cosine_similarity(np.array([0, 0]), np.array([1, 2])) == 0.0
+
+
+def test_answer_from_document_without_chunks_returns_empty_result():
+    rag_engine.DOCUMENT_CHUNKS.clear()
+    rag_engine.DOCUMENT_EMBEDDINGS.clear()
+
+    assert rag_engine.answer_from_document("What is this?") == (None, 0.0)
+
+
+def test_answer_from_document_uses_local_fallback_without_embeddings(monkeypatch):
+    monkeypatch.setattr(
+        rag_engine,
+        "DOCUMENT_CHUNKS",
+        ["Quota billing failure means OpenAI embeddings cannot be created, but local keyword search still works."],
+    )
+    monkeypatch.setattr(rag_engine, "DOCUMENT_EMBEDDINGS", [])
+
+    answer, confidence = rag_engine.answer_from_document("Why did quota billing embeddings fail?")
+
+    assert confidence > 0
+    assert "Quota billing failure" in answer
+
+
+def test_local_fallback_returns_none_for_low_overlap(monkeypatch):
+    monkeypatch.setattr(
+        rag_engine,
+        "DOCUMENT_CHUNKS",
+        ["Python is a programming language. Django is a web framework. Flask is lightweight."],
+    )
+    monkeypatch.setattr(rag_engine, "DOCUMENT_EMBEDDINGS", [])
+
+    answer, confidence = rag_engine.answer_from_document("Tell me about Kubernetes networking")
+
+    assert confidence == 0.0
+    assert answer is None
+
+
+def test_local_fallback_returns_complete_section_after_matching_question(monkeypatch):
+    monkeypatch.setattr(
+        rag_engine,
+        "DOCUMENT_CHUNKS",
+        [
+            "\n".join(
+                [
+                    "Tell me about yourself.",
+                    "I am a learning and development professional with experience creating digital learning.",
+                    "I work with stakeholders, define outcomes, and build practical content for learners.",
+                    "Why are you a good fit for this role?",
+                    "I match the role because I combine instructional design, communication, and delivery.",
+                ]
+            )
+        ],
+    )
+    monkeypatch.setattr(rag_engine, "DOCUMENT_EMBEDDINGS", [])
+
+    answer, confidence = rag_engine.answer_from_document("tell me about yourself")
+
+    assert confidence >= 50
+    assert "Tell me about yourself" in answer
+    assert "learning and development professional" in answer
+    assert "Why are you a good fit" not in answer
+
+
+def test_local_fallback_requires_at_least_50_percent_match(monkeypatch):
+    monkeypatch.setattr(
+        rag_engine,
+        "DOCUMENT_CHUNKS",
+        ["quota billing failure creates local search fallback"],
+    )
+    monkeypatch.setattr(rag_engine, "DOCUMENT_EMBEDDINGS", [])
+
+    answer, confidence = rag_engine.answer_from_document("quota unrelated words")
+
+    assert confidence < 50
+    assert answer is None
+
+
+def test_answer_from_gemini_uses_configured_client(monkeypatch):
+    class Response:
+        text = "1. **Gemini Answer**: This came from Gemini."
+
+    class Models:
+        def generate_content(self, model, contents):
+            assert model == "gemini-2.5-flash-lite"
+            assert "Question:" in contents
+            return Response()
+
+    class Client:
+        models = Models()
+
+    monkeypatch.setattr(rag_engine, "gemini_client", Client())
+
+    assert "Gemini Answer" in rag_engine.answer_from_gemini("Who is the doctor?")

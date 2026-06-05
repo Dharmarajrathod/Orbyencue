@@ -1,0 +1,155 @@
+:root {
+  color-scheme: light;
+  --bg: #eef2f7;
+  --panel: #ffffff;
+  --text: #172033;
+  --muted: #657083;
+  --brand: #155f9f;
+  --brand-dark: #0e456f;
+  --danger: #bd2f35;
+  --border: #d9e0ea;
+  --soft: #f7f9fc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.app {
+  min-width: 320px;
+  padding: 16px;
+}
+
+.header {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+h1 {
+  font-size: 22px;
+  letter-spacing: 0;
+  line-height: 1.1;
+  margin: 0;
+}
+
+p {
+  color: var(--muted);
+  margin: 4px 0 0;
+}
+
+.badge {
+  background: #dcefff;
+  border: 1px solid #b8d8f2;
+  border-radius: 999px;
+  color: var(--brand-dark);
+  font-size: 12px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 12px;
+  padding: 12px;
+}
+
+.label,
+.sectionTitle {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+input,
+select,
+textarea {
+  background: var(--soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  padding: 9px;
+  width: 100%;
+}
+
+textarea {
+  min-height: 82px;
+  resize: vertical;
+}
+
+button {
+  background: var(--brand);
+  border: 0;
+  border-radius: 6px;
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  min-height: 38px;
+  padding: 8px 12px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.secondary {
+  background: #526174;
+}
+
+.danger {
+  background: var(--danger);
+}
+
+.row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.row button {
+  flex: 0 0 auto;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.controls select {
+  margin-bottom: 10px;
+}
+
+.log,
+.answer {
+  background: var(--soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-height: 120px;
+  overflow-wrap: anywhere;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+.answer ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.answer li {
+  margin-bottom: 8px;
+}

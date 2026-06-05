@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ORBYNECUE</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="header">
+        <div>
+          <h1>ORBYNECUE</h1>
+          <p>Real-time meeting intelligence</p>
+        </div>
+        <span id="statusBadge" class="badge">Idle</span>
+      </header>
+
+      <section class="panel">
+        <label class="label" for="knowledgeFile">Knowledge file</label>
+        <input id="knowledgeFile" type="file" accept=".txt,.md,.csv,.json">
+        <div class="row">
+          <button id="clearKnowledge" type="button" class="secondary">Clear</button>
+          <span id="knowledgeStatus" class="muted">No file loaded</span>
+        </div>
+      </section>
+
+      <section class="panel controls">
+        <label class="label" for="language">Transcription language</label>
+        <select id="language">
+          <option value="en-US">English</option>
+          <option value="es-ES">Spanish</option>
+          <option value="fr-FR">French</option>
+          <option value="de-DE">German</option>
+          <option value="ar-SA">Arabic</option>
+        </select>
+        <div class="row">
+          <button id="startListening" type="button">Start Listening</button>
+          <button id="stopListening" type="button" class="danger" disabled>Stop</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <label class="label" for="manualQuestion">Ask manually</label>
+        <textarea id="manualQuestion" rows="3" placeholder="Type a question from your meeting..."></textarea>
+        <button id="askQuestion" type="button">Ask</button>
+      </section>
+
+      <section class="panel output">
+        <div class="sectionTitle">Transcript</div>
+        <div id="transcript" class="log"></div>
+      </section>
+
+      <section class="panel output">
+        <div class="sectionTitle">Answer</div>
+        <div id="answer" class="answer"></div>
+      </section>
+    </main>
+
+    <script src="sidepanel.js"></script>
+  </body>
+</html>
