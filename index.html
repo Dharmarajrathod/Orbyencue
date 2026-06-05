@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ORBYNECUE</title>
+    <link rel="icon" href="icon.png">
+    <link rel="stylesheet" href="assets/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="workspace" aria-label="ORBYNECUE workspace">
+        <header class="topbar">
+          <div class="brand">
+            <img src="logo.png" alt="" class="brandLogo">
+            <div>
+              <h1>ORBYNECUE</h1>
+              <p>Meeting questions, document context, and Gemini answers in one browser workspace.</p>
+            </div>
+          </div>
+          <div class="statusGroup">
+            <span id="connectionStatus" class="statusPill">Backend not set</span>
+            <span id="listeningStatus" class="statusPill neutral">Idle</span>
+          </div>
+        </header>
+
+        <section class="configBar" aria-label="Backend settings">
+          <label>
+            <span>Gemini backend URL</span>
+            <input id="backendUrl" type="url" placeholder="https://your-render-service.onrender.com">
+          </label>
+          <label>
+            <span>Backend token</span>
+            <input id="backendToken" type="password" placeholder="Optional">
+          </label>
+          <button id="saveSettings" type="button">Save</button>
+          <button id="testBackend" type="button" class="secondary">Test</button>
+        </section>
+
+        <section class="grid">
+          <aside class="sidebar" aria-label="Controls">
+            <section class="toolBlock">
+              <div class="sectionHeader">
+                <h2>Knowledge</h2>
+                <span id="knowledgeStatus">No file</span>
+              </div>
+              <label class="fileDrop" for="knowledgeFile">
+                <input id="knowledgeFile" type="file" accept=".txt,.md,.csv,.json">
+                <strong>Upload file</strong>
+                <span>Text, markdown, CSV, or JSON</span>
+              </label>
+              <button id="clearKnowledge" type="button" class="secondary fullWidth">Clear knowledge</button>
+            </section>
+
+            <section class="toolBlock">
+              <div class="sectionHeader">
+                <h2>Voice</h2>
+                <span id="speechSupport">Checking</span>
+              </div>
+              <label class="field">
+                <span>Language</span>
+                <select id="language">
+                  <option value="en-US">English</option>
+                  <option value="hi-IN">Hindi</option>
+                  <option value="es-ES">Spanish</option>
+                  <option value="fr-FR">French</option>
+                  <option value="de-DE">German</option>
+                  <option value="ar-SA">Arabic</option>
+                </select>
+              </label>
+              <div class="buttonRow">
+                <button id="startListening" type="button">Start</button>
+                <button id="stopListening" type="button" class="danger" disabled>Stop</button>
+              </div>
+            </section>
+
+            <section class="toolBlock">
+              <div class="sectionHeader">
+                <h2>Ask</h2>
+              </div>
+              <textarea id="manualQuestion" rows="4" placeholder="Type a question here..."></textarea>
+              <button id="askQuestion" type="button" class="fullWidth">Ask question</button>
+            </section>
+          </aside>
+
+          <section class="mainPanel" aria-label="Answers">
+            <section class="liveQuestion">
+              <div>
+                <span class="eyebrow">Listening transcript</span>
+                <p id="interimTranscript">Waiting for speech or a typed question.</p>
+              </div>
+              <button id="clearTranscript" type="button" class="iconButton" aria-label="Clear transcript">Clear</button>
+            </section>
+
+            <section class="answerPanel">
+              <div class="sectionHeader">
+                <h2>Answer</h2>
+                <span id="answerSource">No question yet</span>
+              </div>
+              <div id="answerOutput" class="answerOutput"></div>
+            </section>
+
+            <section class="historyPanel">
+              <div class="sectionHeader">
+                <h2>History</h2>
+                <button id="clearHistory" type="button" class="secondary smallButton">Clear</button>
+              </div>
+              <div id="historyList" class="historyList"></div>
+            </section>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="assets/app.js"></script>
+  </body>
+</html>

@@ -23,6 +23,7 @@ This backend keeps your Gemini API key on Render so desktop users do not need to
 8. Optional environment variable:
 
    - `GEMINI_MODELS`: `gemini-2.5-flash-lite,gemini-2.5-flash,gemini-2.0-flash`
+   - `ALLOWED_ORIGINS`: your GitHub Pages URL, or `*` while testing
 
 9. Click `Deploy Web Service`.
 

@@ -3,6 +3,7 @@ import os
 import time
 
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 
@@ -24,6 +25,22 @@ class AnswerResponse(BaseModel):
 
 app = FastAPI(title="ORBYNECUE Gemini Backend")
 gemini_client = None
+
+
+def get_allowed_origins():
+    configured = os.getenv("ALLOWED_ORIGINS")
+    if configured:
+        return [origin.strip() for origin in configured.split(",") if origin.strip()]
+    return ["*"]
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_allowed_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 def get_models():
