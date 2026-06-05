@@ -4,6 +4,7 @@ import os
 import re
 import time
 import numpy as np
+import requests
 from openai import OpenAI
 
 from config import load_environment
@@ -238,6 +239,21 @@ Answer:
 
 def answer_from_gemini(question: str):
     """General Gemini fallback (no document restriction)"""
+    backend_url = os.getenv("GEMINI_BACKEND_URL")
+    if backend_url:
+        headers = {}
+        backend_token = os.getenv("ORBYNECUE_BACKEND_TOKEN")
+        if backend_token:
+            headers["Authorization"] = f"Bearer {backend_token}"
+
+        response = requests.post(
+            backend_url.rstrip("/") + "/answer",
+            json={"question": question},
+            headers=headers,
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()["answer"].strip()
 
     prompt = f"""
 You are an interview assistant.
