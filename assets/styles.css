@@ -172,7 +172,7 @@ h2 {
   border-bottom: 1px solid var(--line);
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(240px, 1.8fr) minmax(180px, 1fr) auto auto;
+  grid-template-columns: minmax(240px, 1.8fr) minmax(180px, 0.8fr) auto auto;
 }
 
 .configBar label,

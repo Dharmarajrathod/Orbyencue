@@ -5,8 +5,8 @@ ORBYNECUE now includes a static website that can be published with GitHub Pages.
 ## What Runs Where
 
 - GitHub Pages hosts the website from `index.html` and `assets/`.
-- Render hosts `app.py`, which securely calls Gemini with `GEMINI_API_KEY`.
-- The website never stores the Gemini API key.
+- The website calls Gemini directly from the browser with the API key you paste into the page.
+- The API key is saved in browser local storage on that machine.
 
 ## Publish On GitHub Pages
 
@@ -21,13 +21,13 @@ ORBYNECUE now includes a static website that can be published with GitHub Pages.
 
 ## Connect The Website To Gemini
 
-1. Deploy the backend on Render using `BACKEND_DEPLOYMENT.md`.
-2. Copy the Render service URL.
-3. Open the GitHub Pages website.
-4. Paste the Render URL into `Gemini backend URL`.
-5. If you set `ORBYNECUE_BACKEND_TOKEN` on Render, paste the same token into `Backend token`.
-6. Click `Save`.
-7. Click `Test`.
+1. Open the GitHub Pages website.
+2. Paste your Gemini API key into `Gemini API key`.
+3. Choose the Gemini model.
+4. Click `Save`.
+5. Upload a knowledge file or ask a question manually.
+
+Do not share this public website with other people while your API key is saved in it. For public users, use the Render backend approach instead.
 
 ## Browser Notes
 

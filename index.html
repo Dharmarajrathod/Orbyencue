@@ -19,22 +19,26 @@
             </div>
           </div>
           <div class="statusGroup">
-            <span id="connectionStatus" class="statusPill">Backend not set</span>
+            <span id="connectionStatus" class="statusPill">Gemini key not set</span>
             <span id="listeningStatus" class="statusPill neutral">Idle</span>
           </div>
         </header>
 
-        <section class="configBar" aria-label="Backend settings">
+        <section class="configBar" aria-label="Gemini settings">
           <label>
-            <span>Gemini backend URL</span>
-            <input id="backendUrl" type="url" placeholder="https://your-render-service.onrender.com">
+            <span>Gemini API key</span>
+            <input id="geminiApiKey" type="password" placeholder="Paste your Gemini API key">
           </label>
           <label>
-            <span>Backend token</span>
-            <input id="backendToken" type="password" placeholder="Optional">
+            <span>Gemini model</span>
+            <select id="geminiModel">
+              <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+              <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
+              <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+            </select>
           </label>
           <button id="saveSettings" type="button">Save</button>
-          <button id="testBackend" type="button" class="secondary">Test</button>
+          <button id="clearApiKey" type="button" class="secondary">Clear</button>
         </section>
 
         <section class="grid">

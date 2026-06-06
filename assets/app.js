@@ -2,12 +2,13 @@ const elements = {
   answerOutput: document.querySelector("#answerOutput"),
   answerSource: document.querySelector("#answerSource"),
   askQuestion: document.querySelector("#askQuestion"),
-  backendToken: document.querySelector("#backendToken"),
-  backendUrl: document.querySelector("#backendUrl"),
+  clearApiKey: document.querySelector("#clearApiKey"),
   clearHistory: document.querySelector("#clearHistory"),
   clearKnowledge: document.querySelector("#clearKnowledge"),
   clearTranscript: document.querySelector("#clearTranscript"),
   connectionStatus: document.querySelector("#connectionStatus"),
+  geminiApiKey: document.querySelector("#geminiApiKey"),
+  geminiModel: document.querySelector("#geminiModel"),
   historyList: document.querySelector("#historyList"),
   interimTranscript: document.querySelector("#interimTranscript"),
   knowledgeFile: document.querySelector("#knowledgeFile"),
@@ -18,13 +19,12 @@ const elements = {
   saveSettings: document.querySelector("#saveSettings"),
   speechSupport: document.querySelector("#speechSupport"),
   startListening: document.querySelector("#startListening"),
-  stopListening: document.querySelector("#stopListening"),
-  testBackend: document.querySelector("#testBackend")
+  stopListening: document.querySelector("#stopListening")
 };
 
 const STORAGE_KEYS = {
-  backendToken: "orbynecue.backendToken",
-  backendUrl: "orbynecue.backendUrl",
+  geminiApiKey: "orbynecue.geminiApiKey",
+  geminiModel: "orbynecue.geminiModel",
   history: "orbynecue.history",
   knowledge: "orbynecue.knowledge"
 };
@@ -200,36 +200,70 @@ function renderAnswer(answer, source) {
   elements.answerSource.textContent = source;
 }
 
-function getBackendSettings() {
-  return {
-    token: elements.backendToken.value.trim(),
-    url: elements.backendUrl.value.trim().replace(/\/+$/, "")
-  };
+function buildGeminiPrompt(question) {
+  return `You are an interview assistant.
+
+STRICT OUTPUT RULES (MANDATORY):
+- The answer MUST be a numbered list.
+- Each point MUST follow this EXACT format:
+
+1. **2-3 word heading**: explanation in 1-2 concise sentences.
+2. **2-3 word heading**: explanation in 1-2 concise sentences.
+3. **2-3 word heading**: explanation in 1-2 concise sentences.
+
+IMPORTANT:
+- Headings MUST be wrapped in ** ** (markdown bold).
+- Keep the heading and explanation on the SAME LINE.
+- Do NOT add blank lines between points.
+- Do NOT use bullet points.
+- Do NOT add extra text before or after the list.
+
+Question:
+${question}
+
+Answer:`;
 }
 
-async function callGeminiBackend(question) {
-  const { token, url } = getBackendSettings();
-  if (!url) {
-    throw new Error("Set your Gemini backend URL first.");
+async function callGemini(question) {
+  const apiKey = elements.geminiApiKey.value.trim();
+  const model = elements.geminiModel.value;
+
+  if (!apiKey) {
+    throw new Error("Paste your Gemini API key first.");
   }
 
-  const headers = { "Content-Type": "application/json" };
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-
-  const response = await fetch(`${url}/answer`, {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: "POST",
-    headers,
-    body: JSON.stringify({ question })
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": apiKey
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          parts: [{ text: buildGeminiPrompt(question) }]
+        }
+      ]
+    })
   });
 
+  const payload = await response.json().catch(() => ({}));
+
   if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `Backend request failed with ${response.status}`);
+    const message = payload.error?.message || `Gemini request failed with ${response.status}`;
+    throw new Error(message);
   }
 
-  return response.json();
+  const text = payload.candidates?.[0]?.content?.parts
+    ?.map((part) => part.text || "")
+    .join("")
+    .trim();
+
+  if (!text) {
+    throw new Error("Gemini returned an empty answer.");
+  }
+
+  return { answer: text, model };
 }
 
 async function answerQuestion(question) {
@@ -253,9 +287,9 @@ async function answerQuestion(question) {
       return;
     }
 
-    const result = await callGeminiBackend(trimmed);
-    renderAnswer(result.answer, `Gemini | ${result.model || "backend"}`);
-    addHistory(trimmed, "Gemini backend");
+    const result = await callGemini(trimmed);
+    renderAnswer(result.answer, `Gemini | ${result.model}`);
+    addHistory(trimmed, "Gemini");
   } catch (error) {
     elements.answerOutput.textContent = `Error: ${error.message}`;
     elements.answerSource.textContent = "Error";
@@ -326,13 +360,13 @@ function createRecognition() {
 }
 
 function loadState() {
-  elements.backendUrl.value = localStorage.getItem(STORAGE_KEYS.backendUrl) || "";
-  elements.backendToken.value = localStorage.getItem(STORAGE_KEYS.backendToken) || "";
+  elements.geminiApiKey.value = localStorage.getItem(STORAGE_KEYS.geminiApiKey) || "";
+  elements.geminiModel.value = localStorage.getItem(STORAGE_KEYS.geminiModel) || "gemini-2.5-flash";
   chunks = JSON.parse(localStorage.getItem(STORAGE_KEYS.knowledge) || "[]");
   history = JSON.parse(localStorage.getItem(STORAGE_KEYS.history) || "[]");
 
   elements.knowledgeStatus.textContent = chunks.length ? `${chunks.length} chunks` : "No file";
-  setConnectionStatus(elements.backendUrl.value ? "Backend saved" : "Backend not set", elements.backendUrl.value ? "" : "neutral");
+  setConnectionStatus(elements.geminiApiKey.value ? "Gemini key saved" : "Gemini key not set", elements.geminiApiKey.value ? "" : "neutral");
   renderHistory();
 
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -340,30 +374,18 @@ function loadState() {
 }
 
 elements.saveSettings.addEventListener("click", () => {
-  const { token, url } = getBackendSettings();
-  localStorage.setItem(STORAGE_KEYS.backendUrl, url);
-  localStorage.setItem(STORAGE_KEYS.backendToken, token);
-  setConnectionStatus(url ? "Backend saved" : "Backend not set", url ? "" : "neutral");
+  const apiKey = elements.geminiApiKey.value.trim();
+  const model = elements.geminiModel.value;
+
+  localStorage.setItem(STORAGE_KEYS.geminiApiKey, apiKey);
+  localStorage.setItem(STORAGE_KEYS.geminiModel, model);
+  setConnectionStatus(apiKey ? "Gemini key saved" : "Gemini key not set", apiKey ? "" : "neutral");
 });
 
-elements.testBackend.addEventListener("click", async () => {
-  const { token, url } = getBackendSettings();
-  if (!url) {
-    setConnectionStatus("Backend not set", "error");
-    return;
-  }
-
-  try {
-    const headers = token ? { Authorization: `Bearer ${token}` } : {};
-    const response = await fetch(`${url}/health`, { headers });
-    if (!response.ok) {
-      throw new Error(`Health check failed: ${response.status}`);
-    }
-    setConnectionStatus("Backend online");
-  } catch (error) {
-    setConnectionStatus("Backend error", "error");
-    elements.answerOutput.textContent = error.message;
-  }
+elements.clearApiKey.addEventListener("click", () => {
+  elements.geminiApiKey.value = "";
+  localStorage.removeItem(STORAGE_KEYS.geminiApiKey);
+  setConnectionStatus("Gemini key not set", "neutral");
 });
 
 elements.knowledgeFile.addEventListener("change", async (event) => {
