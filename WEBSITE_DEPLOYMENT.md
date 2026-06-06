@@ -40,6 +40,7 @@ After deploy, open the Render URL. The website will work directly because the ba
 - The website can listen to microphone audio allowed by the browser.
 - To capture meeting audio, click `Share audio`, choose the meeting tab or screen, and enable the browser's audio sharing option.
 - In Chrome, Google Meet audio capture usually works best by choosing the `Chrome Tab` option and selecting the Meet tab with `Share tab audio` enabled.
+- The Meeting Audio meter should move and say `Audio detected`. If it says `No audio detected`, stop sharing and share the Meet tab again with tab audio enabled.
 - Browser websites cannot directly capture another app's system audio unless the user shares a tab/screen or uses OS-level audio routing.
 - Knowledge uploads support `.pdf`, `.docx`, `.pptx`, `.txt`, `.md`, `.csv`, and `.json`.
 - Old `.doc` and `.ppt` files are attempted with system converters. If they fail, save them as `.docx` or `.pptx` and upload again.

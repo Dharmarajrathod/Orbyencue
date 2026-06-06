@@ -244,6 +244,23 @@ h2 {
   padding-top: 14px;
 }
 
+.audioLevel {
+  background: var(--surface-alt);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  height: 10px;
+  overflow: hidden;
+}
+
+.audioLevel span {
+  background: var(--green);
+  display: block;
+  height: 100%;
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 160ms ease;
+}
+
 .secondary {
   background: #566579;
 }

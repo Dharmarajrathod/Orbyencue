@@ -13,6 +13,7 @@ const elements = {
   language: document.querySelector("#language"),
   listeningStatus: document.querySelector("#listeningStatus"),
   manualQuestion: document.querySelector("#manualQuestion"),
+  meetingAudioLevel: document.querySelector("#meetingAudioLevel"),
   meetingAudioStatus: document.querySelector("#meetingAudioStatus"),
   speechSupport: document.querySelector("#speechSupport"),
   startMeetingAudio: document.querySelector("#startMeetingAudio"),
@@ -30,6 +31,9 @@ const DOCUMENT_MATCH_THRESHOLD = 50;
 const MAX_LOCAL_ANSWER_WORDS = 180;
 
 let recognition = null;
+let meetingAudioActive = false;
+let meetingAudioContext = null;
+let meetingAudioLevelTimer = null;
 let meetingAudioRecorder = null;
 let meetingAudioStream = null;
 let meetingAudioUploadActive = false;
@@ -48,6 +52,11 @@ function setListeningStatus(text, state = "neutral") {
 
 function setMeetingAudioStatus(text) {
   elements.meetingAudioStatus.textContent = text;
+}
+
+function setMeetingAudioLevel(value) {
+  const bounded = Math.max(0, Math.min(value, 1));
+  elements.meetingAudioLevel.style.transform = `scaleX(${bounded})`;
 }
 
 function escapeHtml(value) {
@@ -329,6 +338,13 @@ function getSupportedAudioMimeType() {
   return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
 }
 
+function getAudioFileName(mimeType) {
+  if (mimeType.includes("mp4")) {
+    return "meeting-audio.mp4";
+  }
+  return "meeting-audio.webm";
+}
+
 async function sendMeetingAudioChunk(blob) {
   if (meetingAudioUploadActive || !blob.size) {
     return;
@@ -337,7 +353,7 @@ async function sendMeetingAudioChunk(blob) {
   meetingAudioUploadActive = true;
   try {
     const formData = new FormData();
-    formData.append("file", blob, "meeting-audio.webm");
+    formData.append("file", blob, getAudioFileName(blob.type || ""));
     const response = await fetch("/transcribe-audio", {
       method: "POST",
       body: formData
@@ -360,6 +376,88 @@ async function sendMeetingAudioChunk(blob) {
   }
 }
 
+function startMeetingAudioMeter(audioStream) {
+  stopMeetingAudioMeter();
+  const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+  meetingAudioContext = new AudioContextConstructor();
+  const source = meetingAudioContext.createMediaStreamSource(audioStream);
+  const analyser = meetingAudioContext.createAnalyser();
+  analyser.fftSize = 1024;
+  source.connect(analyser);
+
+  const samples = new Uint8Array(analyser.fftSize);
+  let silentTicks = 0;
+
+  meetingAudioLevelTimer = window.setInterval(() => {
+    analyser.getByteTimeDomainData(samples);
+    let sum = 0;
+    for (const sample of samples) {
+      const centered = (sample - 128) / 128;
+      sum += centered * centered;
+    }
+
+    const rms = Math.sqrt(sum / samples.length);
+    const level = Math.min(rms * 8, 1);
+    setMeetingAudioLevel(level);
+
+    if (rms > 0.018) {
+      silentTicks = 0;
+      setMeetingAudioStatus("Audio detected");
+    } else {
+      silentTicks += 1;
+      if (silentTicks >= 8) {
+        setMeetingAudioStatus("No audio detected");
+      }
+    }
+  }, 500);
+}
+
+function stopMeetingAudioMeter() {
+  if (meetingAudioLevelTimer) {
+    window.clearInterval(meetingAudioLevelTimer);
+    meetingAudioLevelTimer = null;
+  }
+  if (meetingAudioContext) {
+    meetingAudioContext.close();
+    meetingAudioContext = null;
+  }
+  setMeetingAudioLevel(0);
+}
+
+function recordNextMeetingAudioSegment(audioStream) {
+  if (!meetingAudioActive) {
+    return;
+  }
+
+  const mimeType = getSupportedAudioMimeType();
+  const segmentParts = [];
+  meetingAudioRecorder = new MediaRecorder(audioStream, mimeType ? { mimeType } : undefined);
+
+  meetingAudioRecorder.addEventListener("dataavailable", (event) => {
+    if (event.data?.size) {
+      segmentParts.push(event.data);
+    }
+  });
+
+  meetingAudioRecorder.addEventListener("stop", () => {
+    if (segmentParts.length) {
+      const blob = new Blob(segmentParts, { type: meetingAudioRecorder.mimeType || mimeType || "audio/webm" });
+      sendMeetingAudioChunk(blob);
+    }
+
+    if (meetingAudioActive) {
+      window.setTimeout(() => recordNextMeetingAudioSegment(audioStream), 250);
+    }
+  });
+
+  meetingAudioRecorder.start();
+  window.setTimeout(() => {
+    if (meetingAudioRecorder?.state === "recording") {
+      meetingAudioRecorder.stop();
+    }
+  }, 10000);
+}
+
 async function startMeetingAudioCapture() {
   if (!navigator.mediaDevices?.getDisplayMedia) {
     throw new Error("Meeting audio capture needs Chrome or Edge screen/tab sharing.");
@@ -370,7 +468,16 @@ async function startMeetingAudioCapture() {
 
   meetingAudioStream = await navigator.mediaDevices.getDisplayMedia({
     video: true,
-    audio: true
+    audio: {
+      autoGainControl: false,
+      echoCancellation: false,
+      noiseSuppression: false,
+      suppressLocalAudioPlayback: false
+    },
+    preferCurrentTab: false,
+    selfBrowserSurface: "exclude",
+    surfaceSwitching: "include",
+    systemAudio: "include"
   });
 
   const audioTracks = meetingAudioStream.getAudioTracks();
@@ -381,33 +488,21 @@ async function startMeetingAudioCapture() {
   }
 
   const audioOnlyStream = new MediaStream(audioTracks);
-  const mimeType = getSupportedAudioMimeType();
-  meetingAudioRecorder = new MediaRecorder(audioOnlyStream, mimeType ? { mimeType } : undefined);
-
-  meetingAudioRecorder.addEventListener("dataavailable", (event) => {
-    if (event.data?.size) {
-      sendMeetingAudioChunk(event.data);
-    }
-  });
-
-  meetingAudioRecorder.addEventListener("stop", () => {
-    if (meetingAudioStream) {
-      meetingAudioStream.getTracks().forEach((track) => track.stop());
-      meetingAudioStream = null;
-    }
-  });
 
   for (const track of meetingAudioStream.getTracks()) {
     track.addEventListener("ended", stopMeetingAudioCapture);
   }
 
-  meetingAudioRecorder.start(8000);
+  meetingAudioActive = true;
+  startMeetingAudioMeter(audioOnlyStream);
+  recordNextMeetingAudioSegment(audioOnlyStream);
   elements.startMeetingAudio.disabled = true;
   elements.stopMeetingAudio.disabled = false;
-  setMeetingAudioStatus("Sharing audio");
+  setMeetingAudioStatus("Checking audio");
 }
 
 function stopMeetingAudioCapture() {
+  meetingAudioActive = false;
   if (meetingAudioRecorder && meetingAudioRecorder.state !== "inactive") {
     meetingAudioRecorder.stop();
   }
@@ -417,6 +512,7 @@ function stopMeetingAudioCapture() {
   }
   elements.startMeetingAudio.disabled = false;
   elements.stopMeetingAudio.disabled = true;
+  stopMeetingAudioMeter();
   setMeetingAudioStatus("Not shared");
 }
 
