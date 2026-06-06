@@ -58,3 +58,9 @@ Expected:
 - Text data: `.txt`, `.md`, `.csv`, `.json`
 
 Old `.doc` and `.ppt` files are attempted with system converters. For best reliability, save old Office files as `.docx` or `.pptx`.
+
+## Meeting Audio Capture
+
+The website includes a `Share audio` button. It asks the browser for tab/screen audio, sends short audio chunks to `/transcribe-audio`, and uses Gemini to transcribe them.
+
+For Google Meet in Chrome, choose `Chrome Tab`, select the Meet tab, and enable `Share tab audio`.

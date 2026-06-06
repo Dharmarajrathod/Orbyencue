@@ -13,8 +13,11 @@ const elements = {
   language: document.querySelector("#language"),
   listeningStatus: document.querySelector("#listeningStatus"),
   manualQuestion: document.querySelector("#manualQuestion"),
+  meetingAudioStatus: document.querySelector("#meetingAudioStatus"),
   speechSupport: document.querySelector("#speechSupport"),
+  startMeetingAudio: document.querySelector("#startMeetingAudio"),
   startListening: document.querySelector("#startListening"),
+  stopMeetingAudio: document.querySelector("#stopMeetingAudio"),
   stopListening: document.querySelector("#stopListening")
 };
 
@@ -27,6 +30,9 @@ const DOCUMENT_MATCH_THRESHOLD = 50;
 const MAX_LOCAL_ANSWER_WORDS = 180;
 
 let recognition = null;
+let meetingAudioRecorder = null;
+let meetingAudioStream = null;
+let meetingAudioUploadActive = false;
 let chunks = [];
 let history = [];
 
@@ -38,6 +44,10 @@ function setConnectionStatus(text, state = "neutral") {
 function setListeningStatus(text, state = "neutral") {
   elements.listeningStatus.textContent = text;
   elements.listeningStatus.className = `statusPill ${state}`;
+}
+
+function setMeetingAudioStatus(text) {
+  elements.meetingAudioStatus.textContent = text;
 }
 
 function escapeHtml(value) {
@@ -310,6 +320,106 @@ function createRecognition() {
   return nextRecognition;
 }
 
+function getSupportedAudioMimeType() {
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4"
+  ];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+async function sendMeetingAudioChunk(blob) {
+  if (meetingAudioUploadActive || !blob.size) {
+    return;
+  }
+
+  meetingAudioUploadActive = true;
+  try {
+    const formData = new FormData();
+    formData.append("file", blob, "meeting-audio.webm");
+    const response = await fetch("/transcribe-audio", {
+      method: "POST",
+      body: formData
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || `Audio transcription failed with ${response.status}`);
+    }
+
+    const transcript = (payload.transcript || "").trim();
+    if (transcript) {
+      elements.interimTranscript.textContent = transcript;
+      await answerQuestion(transcript);
+    }
+  } catch (error) {
+    elements.answerOutput.textContent = `Meeting audio error: ${error.message}`;
+    elements.answerSource.textContent = "Error";
+  } finally {
+    meetingAudioUploadActive = false;
+  }
+}
+
+async function startMeetingAudioCapture() {
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    throw new Error("Meeting audio capture needs Chrome or Edge screen/tab sharing.");
+  }
+  if (!window.MediaRecorder) {
+    throw new Error("This browser does not support MediaRecorder audio capture.");
+  }
+
+  meetingAudioStream = await navigator.mediaDevices.getDisplayMedia({
+    video: true,
+    audio: true
+  });
+
+  const audioTracks = meetingAudioStream.getAudioTracks();
+  if (!audioTracks.length) {
+    meetingAudioStream.getTracks().forEach((track) => track.stop());
+    meetingAudioStream = null;
+    throw new Error("No shared audio found. Choose a tab/screen with audio sharing enabled.");
+  }
+
+  const audioOnlyStream = new MediaStream(audioTracks);
+  const mimeType = getSupportedAudioMimeType();
+  meetingAudioRecorder = new MediaRecorder(audioOnlyStream, mimeType ? { mimeType } : undefined);
+
+  meetingAudioRecorder.addEventListener("dataavailable", (event) => {
+    if (event.data?.size) {
+      sendMeetingAudioChunk(event.data);
+    }
+  });
+
+  meetingAudioRecorder.addEventListener("stop", () => {
+    if (meetingAudioStream) {
+      meetingAudioStream.getTracks().forEach((track) => track.stop());
+      meetingAudioStream = null;
+    }
+  });
+
+  for (const track of meetingAudioStream.getTracks()) {
+    track.addEventListener("ended", stopMeetingAudioCapture);
+  }
+
+  meetingAudioRecorder.start(8000);
+  elements.startMeetingAudio.disabled = true;
+  elements.stopMeetingAudio.disabled = false;
+  setMeetingAudioStatus("Sharing audio");
+}
+
+function stopMeetingAudioCapture() {
+  if (meetingAudioRecorder && meetingAudioRecorder.state !== "inactive") {
+    meetingAudioRecorder.stop();
+  }
+  if (meetingAudioStream) {
+    meetingAudioStream.getTracks().forEach((track) => track.stop());
+    meetingAudioStream = null;
+  }
+  elements.startMeetingAudio.disabled = false;
+  elements.stopMeetingAudio.disabled = true;
+  setMeetingAudioStatus("Not shared");
+}
+
 function loadState() {
   chunks = JSON.parse(localStorage.getItem(STORAGE_KEYS.knowledge) || "[]");
   history = JSON.parse(localStorage.getItem(STORAGE_KEYS.history) || "[]");
@@ -395,6 +505,19 @@ elements.stopListening.addEventListener("click", () => {
   if (recognition) {
     recognition.stop();
   }
+});
+
+elements.startMeetingAudio.addEventListener("click", async () => {
+  try {
+    await startMeetingAudioCapture();
+  } catch (error) {
+    elements.answerOutput.textContent = error.message;
+    setMeetingAudioStatus("Error");
+  }
+});
+
+elements.stopMeetingAudio.addEventListener("click", () => {
+  stopMeetingAudioCapture();
 });
 
 elements.clearTranscript.addEventListener("click", () => {

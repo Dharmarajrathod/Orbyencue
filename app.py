@@ -44,6 +44,11 @@ class KnowledgeResponse(BaseModel):
     filename: str
 
 
+class TranscriptResponse(BaseModel):
+    transcript: str
+    model: str
+
+
 app = FastAPI(title="ORBYNECUE Gemini Backend")
 gemini_client = None
 BASE_DIR = Path(__file__).resolve().parent
@@ -251,6 +256,36 @@ def generate_answer(question: str):
     raise RuntimeError("Gemini fallback failed. " + " | ".join(errors[-3:]))
 
 
+def transcribe_audio(audio_bytes: bytes, mime_type: str):
+    errors = []
+    prompt = (
+        "Transcribe the spoken words in this audio. "
+        "Return only the transcript text. If there is no clear speech, return an empty string."
+    )
+
+    from google.genai import types
+
+    for model in get_models():
+        for attempt in range(3):
+            try:
+                response = get_gemini_client().models.generate_content(
+                    model=model,
+                    contents=[
+                        prompt,
+                        types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+                    ],
+                )
+                return (response.text or "").strip(), model
+            except Exception as exc:
+                message = str(exc)
+                errors.append(f"{model}: {message}")
+                if "503" not in message and "UNAVAILABLE" not in message:
+                    break
+                time.sleep(0.75 * (attempt + 1))
+
+    raise RuntimeError("Gemini transcription failed. " + " | ".join(errors[-3:]))
+
+
 @app.get("/health")
 def health():
     return {
@@ -313,6 +348,20 @@ async def upload_knowledge(file: UploadFile = File(...)):
     finally:
         if temp_path and temp_path.exists():
             temp_path.unlink(missing_ok=True)
+
+
+@app.post("/transcribe-audio", response_model=TranscriptResponse)
+async def transcribe_meeting_audio(file: UploadFile = File(...)):
+    audio_bytes = await file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="Empty audio chunk.")
+
+    mime_type = file.content_type or "audio/webm"
+    try:
+        transcript, model = transcribe_audio(audio_bytes, mime_type)
+        return TranscriptResponse(transcript=transcript, model=model)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 if __name__ == "__main__":
