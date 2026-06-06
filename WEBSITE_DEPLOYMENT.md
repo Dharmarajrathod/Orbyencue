@@ -39,3 +39,5 @@ After deploy, open the Render URL. The website will work directly because the ba
 - Speech recognition works best in Chrome or Edge.
 - The website can listen to microphone audio allowed by the browser.
 - Browser websites cannot directly capture another app's system audio unless the user shares a tab/screen or uses OS-level audio routing.
+- Knowledge uploads support `.pdf`, `.docx`, `.pptx`, `.txt`, `.md`, `.csv`, and `.json`.
+- Old `.doc` and `.ppt` files are attempted with system converters. If they fail, save them as `.docx` or `.pptx` and upload again.

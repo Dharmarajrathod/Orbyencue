@@ -337,10 +337,29 @@ elements.knowledgeFile.addEventListener("change", async (event) => {
     return;
   }
 
-  const text = await file.text();
-  chunks = chunkText(text);
-  localStorage.setItem(STORAGE_KEYS.knowledge, JSON.stringify(chunks));
-  elements.knowledgeStatus.textContent = `${chunks.length} chunks`;
+  elements.knowledgeStatus.textContent = "Processing...";
+  elements.answerOutput.textContent = "";
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await fetch("/knowledge", {
+      method: "POST",
+      body: formData
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || `File upload failed with ${response.status}`);
+    }
+
+    chunks = payload.chunks || [];
+    localStorage.setItem(STORAGE_KEYS.knowledge, JSON.stringify(chunks));
+    elements.knowledgeStatus.textContent = `${payload.filename} · ${payload.chunkCount} chunks`;
+  } catch (error) {
+    chunks = [];
+    localStorage.removeItem(STORAGE_KEYS.knowledge);
+    elements.knowledgeStatus.textContent = "Upload failed";
+    elements.answerOutput.textContent = `File processing error: ${error.message}`;
+  }
 });
 
 elements.clearKnowledge.addEventListener("click", () => {

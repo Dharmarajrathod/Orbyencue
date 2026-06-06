@@ -1,8 +1,12 @@
 import os
+import re
+import shutil
+import subprocess
 import time
+import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -34,9 +38,16 @@ class AnswerResponse(BaseModel):
     model: str
 
 
+class KnowledgeResponse(BaseModel):
+    chunks: list[str]
+    chunkCount: int
+    filename: str
+
+
 app = FastAPI(title="ORBYNECUE Gemini Backend")
 gemini_client = None
 BASE_DIR = Path(__file__).resolve().parent
+SUPPORTED_UPLOAD_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".pdf", ".doc", ".docx", ".ppt", ".pptx"}
 
 
 def get_allowed_origins():
@@ -75,6 +86,121 @@ def get_gemini_client():
 
         gemini_client = genai.Client(api_key=api_key)
     return gemini_client
+
+
+def stream_chunks(text: str, max_words: int = 220):
+    paragraphs = [paragraph.strip() for paragraph in text.splitlines() if paragraph.strip()]
+    buffer = []
+    word_count = 0
+
+    for paragraph in paragraphs:
+        words = paragraph.split()
+        if not words:
+            continue
+        if word_count + len(words) > max_words and buffer:
+            yield "\n".join(buffer)
+            buffer = []
+            word_count = 0
+        buffer.append(paragraph)
+        word_count += len(words)
+
+    if buffer:
+        yield "\n".join(buffer)
+
+
+def normalize_text(text: str) -> str:
+    text = re.sub(r"\n{2,}", "\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    return text.strip()
+
+
+def extract_upload_text(path: Path, extension: str) -> str:
+    if extension in {".txt", ".md", ".json"}:
+        return path.read_text(encoding="utf-8", errors="ignore")
+
+    if extension == ".csv":
+        import csv
+
+        rows = []
+        with path.open(newline="", encoding="utf-8", errors="ignore") as file_obj:
+            for row in csv.reader(file_obj):
+                rows.append(" ".join(cell for cell in row if cell))
+        return "\n".join(rows)
+
+    if extension == ".pdf":
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(path))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+
+    if extension == ".docx":
+        from docx import Document
+
+        document = Document(str(path))
+        parts = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
+        for table in document.tables:
+            for row in table.rows:
+                parts.append(" ".join(cell.text.strip() for cell in row.cells if cell.text.strip()))
+        return "\n".join(parts)
+
+    if extension == ".doc":
+        return extract_legacy_office_text(path, extension)
+
+    if extension == ".pptx":
+        from pptx import Presentation
+
+        presentation = Presentation(str(path))
+        parts = []
+        for slide in presentation.slides:
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text.strip():
+                    parts.append(shape.text)
+        return "\n".join(parts)
+
+    if extension == ".ppt":
+        return extract_legacy_office_text(path, extension)
+
+    raise ValueError(f"Unsupported file type: {extension}")
+
+
+def extract_legacy_office_text(path: Path, extension: str) -> str:
+    if extension == ".doc" and shutil.which("textutil"):
+        result = subprocess.run(
+            ["textutil", "-convert", "txt", "-stdout", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout
+
+    if extension == ".doc" and shutil.which("antiword"):
+        result = subprocess.run(
+            ["antiword", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout
+
+    if extension == ".ppt" and shutil.which("catppt"):
+        result = subprocess.run(
+            ["catppt", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout
+
+    raise ValueError(
+        f"Old {extension} files need a system converter. Please save the file as "
+        f"{'.docx' if extension == '.doc' else '.pptx'} and upload again."
+    )
 
 
 def build_prompt(question: str) -> str:
@@ -156,6 +282,37 @@ def answer(request: AnswerRequest):
         return AnswerResponse(answer=answer_text, model=model)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/knowledge", response_model=KnowledgeResponse)
+async def upload_knowledge(file: UploadFile = File(...)):
+    filename = file.filename or "knowledge"
+    extension = Path(filename).suffix.lower()
+    if extension not in SUPPORTED_UPLOAD_EXTENSIONS:
+        supported = ", ".join(sorted(SUPPORTED_UPLOAD_EXTENSIONS))
+        raise HTTPException(status_code=400, detail=f"Unsupported file type. Supported: {supported}")
+
+    suffix = extension or ".txt"
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_path = Path(temp_file.name)
+            while chunk := await file.read(1024 * 1024):
+                temp_file.write(chunk)
+
+        text = normalize_text(extract_upload_text(temp_path, extension))
+        if not text:
+            raise HTTPException(status_code=400, detail="No readable text found in this file.")
+
+        chunks = list(stream_chunks(text))
+        return KnowledgeResponse(chunks=chunks, chunkCount=len(chunks), filename=filename)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"File processing error: {exc}") from exc
+    finally:
+        if temp_path and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

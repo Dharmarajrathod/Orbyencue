@@ -49,3 +49,12 @@ Expected:
 ```json
 {"status":"ok"}
 ```
+
+## Supported Knowledge Files
+
+- PDF: `.pdf`
+- Word: `.docx`
+- PowerPoint: `.pptx`
+- Text data: `.txt`, `.md`, `.csv`, `.json`
+
+Old `.doc` and `.ppt` files are attempted with system converters. For best reliability, save old Office files as `.docx` or `.pptx`.
