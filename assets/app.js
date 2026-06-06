@@ -29,8 +29,13 @@ const STORAGE_KEYS = {
 
 const DOCUMENT_MATCH_THRESHOLD = 50;
 const MAX_LOCAL_ANSWER_WORDS = 180;
+const MEETING_AUDIO_SEGMENT_MS = 20000;
+const MEETING_AUTO_ANSWER_COOLDOWN_MS = 30000;
+const QUESTION_STARTERS = /^(what|why|how|who|when|where|which|can|could|would|should|do|does|did|tell|explain|describe)\b/i;
 
 let recognition = null;
+let lastMeetingAnswerAt = 0;
+let lastMeetingAnswerText = "";
 let meetingAudioActive = false;
 let meetingAudioContext = null;
 let meetingAudioLevelTimer = null;
@@ -213,7 +218,7 @@ function renderAnswer(answer, source) {
   elements.answerSource.textContent = source;
 }
 
-async function callGemini(question) {
+async function callAi(question) {
   const response = await fetch("/answer", {
     method: "POST",
     headers: {
@@ -226,7 +231,9 @@ async function callGemini(question) {
 
   if (!response.ok) {
     const message = payload.detail || `Backend request failed with ${response.status}`;
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
   }
 
   if (!payload.answer) {
@@ -257,14 +264,42 @@ async function answerQuestion(question) {
       return;
     }
 
-    const result = await callGemini(trimmed);
-    renderAnswer(result.answer, `Gemini | ${result.model}`);
-    addHistory(trimmed, "Gemini");
+    const result = await callAi(trimmed);
+    renderAnswer(result.answer, result.model);
+    addHistory(trimmed, result.model);
   } catch (error) {
     elements.answerOutput.textContent = `Error: ${error.message}`;
     elements.answerSource.textContent = "Error";
     addHistory(trimmed, "Error");
   }
+}
+
+function looksLikeQuestion(text) {
+  const cleanText = text.trim();
+  const words = tokenize(cleanText);
+  return cleanText.endsWith("?") || (words.length >= 4 && QUESTION_STARTERS.test(cleanText));
+}
+
+async function maybeAnswerMeetingTranscript(transcript) {
+  const cleanTranscript = transcript.trim();
+  if (!looksLikeQuestion(cleanTranscript)) {
+    elements.answerSource.textContent = "Transcript only";
+    return;
+  }
+
+  const now = Date.now();
+  const normalized = cleanTranscript.toLowerCase();
+  if (normalized === lastMeetingAnswerText) {
+    return;
+  }
+  if (now - lastMeetingAnswerAt < MEETING_AUTO_ANSWER_COOLDOWN_MS) {
+    elements.answerSource.textContent = "Waiting for cooldown";
+    return;
+  }
+
+  lastMeetingAnswerAt = now;
+  lastMeetingAnswerText = normalized;
+  await answerQuestion(cleanTranscript);
 }
 
 function addHistory(question, source) {
@@ -360,17 +395,23 @@ async function sendMeetingAudioChunk(blob) {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(payload.detail || `Audio transcription failed with ${response.status}`);
+      const error = new Error(payload.detail || `Audio transcription failed with ${response.status}`);
+      error.status = response.status;
+      throw error;
     }
 
     const transcript = (payload.transcript || "").trim();
     if (transcript) {
       elements.interimTranscript.textContent = transcript;
-      await answerQuestion(transcript);
+      await maybeAnswerMeetingTranscript(transcript);
     }
   } catch (error) {
     elements.answerOutput.textContent = `Meeting audio error: ${error.message}`;
     elements.answerSource.textContent = "Error";
+    if (error.status === 429) {
+      stopMeetingAudioCapture();
+      setMeetingAudioStatus("Quota exhausted");
+    }
   } finally {
     meetingAudioUploadActive = false;
   }
@@ -455,7 +496,7 @@ function recordNextMeetingAudioSegment(audioStream) {
     if (meetingAudioRecorder?.state === "recording") {
       meetingAudioRecorder.stop();
     }
-  }, 10000);
+  }, MEETING_AUDIO_SEGMENT_MS);
 }
 
 async function startMeetingAudioCapture() {
@@ -531,6 +572,10 @@ async function checkBackend() {
   try {
     const response = await fetch("/health");
     const payload = await response.json();
+    if (payload.provider === "ollama") {
+      setConnectionStatus(`Ollama | ${payload.ollamaModel}`, "neutral");
+      return;
+    }
     setConnectionStatus(payload.geminiConfigured ? "Gemini ready" : "Set GEMINI_API_KEY", payload.geminiConfigured ? "" : "error");
   } catch (error) {
     setConnectionStatus("Backend unavailable", "error");

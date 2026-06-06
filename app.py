@@ -4,6 +4,8 @@ import shutil
 import subprocess
 import time
 import tempfile
+import json
+from urllib import error, request
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -27,6 +29,8 @@ DEFAULT_GEMINI_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.0-flash",
 ]
+DEFAULT_OLLAMA_MODEL = "llama3.2"
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 
 
 class AnswerRequest(BaseModel):
@@ -49,7 +53,17 @@ class TranscriptResponse(BaseModel):
     model: str
 
 
-app = FastAPI(title="ORBYNECUE Gemini Backend")
+class GeminiQuotaError(RuntimeError):
+    def __init__(self, retry_after: int | None = None):
+        self.retry_after = retry_after
+        message = "Gemini quota is exhausted."
+        if retry_after:
+            message += f" Retry after about {retry_after} seconds."
+        message += " Wait for quota reset or enable billing/increase quota in Google AI Studio."
+        super().__init__(message)
+
+
+app = FastAPI(title="ORBYNECUE AI Backend")
 gemini_client = None
 BASE_DIR = Path(__file__).resolve().parent
 SUPPORTED_UPLOAD_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".pdf", ".doc", ".docx", ".ppt", ".pptx"}
@@ -80,6 +94,23 @@ def get_models():
     return DEFAULT_GEMINI_MODELS
 
 
+def get_ai_provider():
+    configured = os.getenv("AI_PROVIDER", "").strip().lower()
+    if configured in {"ollama", "gemini"}:
+        return configured
+    if os.getenv("GEMINI_API_KEY"):
+        return "gemini"
+    return "ollama"
+
+
+def get_ollama_base_url():
+    return os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).rstrip("/")
+
+
+def get_ollama_model():
+    return os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL
+
+
 def get_gemini_client():
     global gemini_client
     if gemini_client is None:
@@ -91,6 +122,23 @@ def get_gemini_client():
 
         gemini_client = genai.Client(api_key=api_key)
     return gemini_client
+
+
+def is_quota_error(message: str) -> bool:
+    return "429" in message or "RESOURCE_EXHAUSTED" in message or "quota" in message.lower()
+
+
+def extract_retry_after(message: str) -> int | None:
+    patterns = [
+        r"retry in ([0-9.]+)s",
+        r"'retryDelay': '([0-9]+)s'",
+        r'"retryDelay": "([0-9]+)s"',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, message, re.IGNORECASE)
+        if match:
+            return max(1, int(float(match.group(1))))
+    return None
 
 
 def stream_chunks(text: str, max_words: int = 220):
@@ -235,7 +283,14 @@ Answer:
 
 
 def generate_answer(question: str):
+    if get_ai_provider() == "ollama":
+        return generate_ollama_answer(question)
+    return generate_gemini_answer(question)
+
+
+def generate_gemini_answer(question: str):
     errors = []
+    quota_retry_after = None
     prompt = build_prompt(question)
 
     for model in get_models():
@@ -245,19 +300,69 @@ def generate_answer(question: str):
                     model=model,
                     contents=prompt,
                 )
-                return response.text.strip(), model
+                return response.text.strip(), f"gemini/{model}"
             except Exception as exc:
                 message = str(exc)
                 errors.append(f"{model}: {message}")
+                if is_quota_error(message):
+                    retry_after = extract_retry_after(message)
+                    if retry_after is not None:
+                        quota_retry_after = retry_after if quota_retry_after is None else min(quota_retry_after, retry_after)
+                    break
                 if "503" not in message and "UNAVAILABLE" not in message:
                     break
                 time.sleep(0.75 * (attempt + 1))
 
+    if quota_retry_after is not None or any(is_quota_error(error) for error in errors):
+        raise GeminiQuotaError(quota_retry_after)
+
     raise RuntimeError("Gemini fallback failed. " + " | ".join(errors[-3:]))
 
 
+def generate_ollama_answer(question: str):
+    prompt = build_prompt(question)
+    model = get_ollama_model()
+    url = f"{get_ollama_base_url()}/api/generate"
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+    }
+
+    try:
+        body = json.dumps(payload).encode("utf-8")
+        req = request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with request.urlopen(req, timeout=int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Ollama request failed with HTTP {exc.code}: {detail}") from exc
+    except error.URLError as exc:
+        raise RuntimeError(
+            f"Ollama is not reachable at {get_ollama_base_url()}. "
+            f"Start Ollama and run `ollama pull {model}`."
+        ) from exc
+
+    answer = (data.get("response") or "").strip()
+    if not answer:
+        raise RuntimeError("Ollama returned an empty answer.")
+    return answer, f"ollama/{model}"
+
+
 def transcribe_audio(audio_bytes: bytes, mime_type: str):
+    if get_ai_provider() == "ollama":
+        raise RuntimeError(
+            "Meeting audio transcription still needs Gemini or another speech-to-text engine. "
+            "Use browser speech recognition/manual questions, or set AI_PROVIDER=gemini for this endpoint."
+        )
+
     errors = []
+    quota_retry_after = None
     prompt = (
         "Transcribe the spoken words in this audio. "
         "Return only the transcript text. If there is no clear speech, return an empty string."
@@ -275,22 +380,35 @@ def transcribe_audio(audio_bytes: bytes, mime_type: str):
                         types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
                     ],
                 )
-                return (response.text or "").strip(), model
+                return (response.text or "").strip(), f"gemini/{model}"
             except Exception as exc:
                 message = str(exc)
                 errors.append(f"{model}: {message}")
+                if is_quota_error(message):
+                    retry_after = extract_retry_after(message)
+                    if retry_after is not None:
+                        quota_retry_after = retry_after if quota_retry_after is None else min(quota_retry_after, retry_after)
+                    break
                 if "503" not in message and "UNAVAILABLE" not in message:
                     break
                 time.sleep(0.75 * (attempt + 1))
+
+    if quota_retry_after is not None or any(is_quota_error(error) for error in errors):
+        raise GeminiQuotaError(quota_retry_after)
 
     raise RuntimeError("Gemini transcription failed. " + " | ".join(errors[-3:]))
 
 
 @app.get("/health")
 def health():
+    provider = get_ai_provider()
     return {
         "status": "ok",
+        "provider": provider,
         "geminiConfigured": bool(os.getenv("GEMINI_API_KEY")),
+        "ollamaConfigured": provider == "ollama",
+        "ollamaBaseUrl": get_ollama_base_url(),
+        "ollamaModel": get_ollama_model(),
         "models": get_models(),
     }
 
@@ -315,6 +433,8 @@ def answer(request: AnswerRequest):
     try:
         answer_text, model = generate_answer(request.question.strip())
         return AnswerResponse(answer=answer_text, model=model)
+    except GeminiQuotaError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -360,6 +480,8 @@ async def transcribe_meeting_audio(file: UploadFile = File(...)):
     try:
         transcript, model = transcribe_audio(audio_bytes, mime_type)
         return TranscriptResponse(transcript=transcript, model=model)
+    except GeminiQuotaError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
