@@ -1,10 +1,21 @@
-import hmac
 import os
 import time
+from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+
+try:
+    from config import load_environment
+except ImportError:
+    load_environment = None
+
+
+if load_environment:
+    load_environment()
 
 
 DEFAULT_GEMINI_MODELS = [
@@ -25,6 +36,7 @@ class AnswerResponse(BaseModel):
 
 app = FastAPI(title="ORBYNECUE Gemini Backend")
 gemini_client = None
+BASE_DIR = Path(__file__).resolve().parent
 
 
 def get_allowed_origins():
@@ -41,6 +53,8 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+app.mount("/assets", StaticFiles(directory=BASE_DIR / "assets"), name="assets")
 
 
 def get_models():
@@ -113,23 +127,46 @@ def generate_answer(question: str):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "geminiConfigured": bool(os.getenv("GEMINI_API_KEY")),
+        "models": get_models(),
+    }
+
+
+@app.get("/")
+def website():
+    return FileResponse(BASE_DIR / "index.html")
+
+
+@app.get("/icon.png")
+def icon():
+    return FileResponse(BASE_DIR / "icon.png")
+
+
+@app.get("/logo.png")
+def logo():
+    return FileResponse(BASE_DIR / "logo.png")
 
 
 @app.post("/answer", response_model=AnswerResponse)
-def answer(request: AnswerRequest, authorization: str | None = Header(default=None)):
+def answer(request: AnswerRequest):
     try:
-        expected_token = os.getenv("ORBYNECUE_BACKEND_TOKEN")
-        if expected_token:
-            provided_token = ""
-            if authorization and authorization.lower().startswith("bearer "):
-                provided_token = authorization[7:].strip()
-            if not hmac.compare_digest(provided_token, expected_token):
-                raise HTTPException(status_code=401, detail="Invalid backend token.")
-
         answer_text, model = generate_answer(request.question.strip())
         return AnswerResponse(answer=answer_text, model=model)
-    except HTTPException:
-        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+if __name__ == "__main__":
+    import threading
+    import webbrowser
+
+    import uvicorn
+
+    port = int(os.getenv("PORT", "8000"))
+    url = f"http://127.0.0.1:{port}"
+    print(f"ORBYNECUE web app: {url}")
+    if os.getenv("ORBYNE_OPEN_BROWSER", "true").lower() != "false":
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    uvicorn.run(app, host="127.0.0.1", port=port)

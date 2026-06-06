@@ -1,6 +1,6 @@
 # Gemini Backend Deployment
 
-This backend keeps your Gemini API key on Render so desktop users do not need to set a key.
+This backend keeps your Gemini API key on Render and serves the ORBYNECUE website directly.
 
 ## Render Setup
 
@@ -18,7 +18,6 @@ This backend keeps your Gemini API key on Render so desktop users do not need to
 7. Add environment variables:
 
    - `GEMINI_API_KEY`: your Gemini key
-   - `ORBYNECUE_BACKEND_TOKEN`: any long random password/token you choose
 
 8. Optional environment variable:
 
@@ -27,16 +26,17 @@ This backend keeps your Gemini API key on Render so desktop users do not need to
 
 9. Click `Deploy Web Service`.
 
-## Desktop App Setup
+## Local App Setup
 
-After Render deploys, copy the Render URL and set:
+Run the backend-served website locally:
 
 ```bash
-export GEMINI_BACKEND_URL="https://your-render-service.onrender.com"
-export ORBYNECUE_BACKEND_TOKEN="same-token-you-set-on-render"
+cd /Users/dharmarajrathod/Documents/ovy
+export GEMINI_API_KEY="your-gemini-api-key"
+/opt/homebrew/bin/python3.10 app.py
 ```
 
-For packaged apps, set this environment variable on the user's machine or build it into a config file.
+Then open `http://127.0.0.1:8000`.
 
 ## Test Backend
 

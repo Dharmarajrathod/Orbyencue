@@ -1,33 +1,38 @@
 # Website Deployment
 
-ORBYNECUE now includes a static website that can be published with GitHub Pages.
+ORBYNECUE now includes a backend-served website. The Gemini API key stays in Python/Render, not in the browser.
 
 ## What Runs Where
 
-- GitHub Pages hosts the website from `index.html` and `assets/`.
-- The website calls Gemini directly from the browser with the API key you paste into the page.
-- The API key is saved in browser local storage on that machine.
+- `app.py` serves the website from `index.html` and `assets/`.
+- `app.py` also exposes `/answer`, which calls Gemini with `GEMINI_API_KEY`.
+- The browser never asks for or stores the Gemini API key.
 
-## Publish On GitHub Pages
+## Run Locally
 
-1. Push the repository to GitHub.
-2. Open the repository on GitHub.
-3. Go to `Settings`.
-4. Click `Pages`.
-5. Under `Build and deployment`, choose `GitHub Actions`.
-6. Go to the `Actions` tab.
-7. Run or wait for `Publish Website`.
-8. Open the deployed Pages URL shown by the workflow.
+```bash
+cd /Users/dharmarajrathod/Documents/ovy
+export GEMINI_API_KEY="your-gemini-api-key"
+/opt/homebrew/bin/python3.10 app.py
+```
 
-## Connect The Website To Gemini
+Then open:
 
-1. Open the GitHub Pages website.
-2. Paste your Gemini API key into `Gemini API key`.
-3. Choose the Gemini model.
-4. Click `Save`.
-5. Upload a knowledge file or ask a question manually.
+```text
+http://127.0.0.1:8000
+```
 
-Do not share this public website with other people while your API key is saved in it. For public users, use the Render backend approach instead.
+## Publish Online
+
+Deploy this repository as a Render `Web Service`.
+
+Use:
+
+- Build Command: `pip install -r backend-requirements.txt`
+- Start Command: `uvicorn app:app --host 0.0.0.0 --port $PORT`
+- Environment variable: `GEMINI_API_KEY`
+
+After deploy, open the Render URL. The website will work directly because the backend already has the key.
 
 ## Browser Notes
 
