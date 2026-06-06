@@ -24,9 +24,11 @@ const elements = {
 
 const STORAGE_KEYS = {
   history: "orbynecue.history",
-  knowledge: "orbynecue.knowledge"
+  knowledge: "orbynecue.knowledge",
+  apiBaseUrl: "orbynecue.apiBaseUrl"
 };
 
+const DEFAULT_LOCAL_BACKEND_URL = "http://127.0.0.1:8000";
 const DOCUMENT_MATCH_THRESHOLD = 50;
 const MAX_LOCAL_ANSWER_WORDS = 180;
 const MEETING_AUDIO_SEGMENT_MS = 20000;
@@ -44,6 +46,27 @@ let meetingAudioStream = null;
 let meetingAudioUploadActive = false;
 let chunks = [];
 let history = [];
+
+function getApiBaseUrl() {
+  const configured = localStorage.getItem(STORAGE_KEYS.apiBaseUrl) || window.ORBYNE_API_BASE_URL || "";
+  if (configured.trim()) {
+    return configured.trim().replace(/\/+$/, "");
+  }
+
+  if (window.location.hostname.endsWith("github.io")) {
+    return DEFAULT_LOCAL_BACKEND_URL;
+  }
+
+  return "";
+}
+
+function apiUrl(path) {
+  const baseUrl = getApiBaseUrl();
+  if (!baseUrl) {
+    return path;
+  }
+  return `${baseUrl}${path}`;
+}
 
 function setConnectionStatus(text, state = "neutral") {
   elements.connectionStatus.textContent = text;
@@ -219,7 +242,7 @@ function renderAnswer(answer, source) {
 }
 
 async function callAi(question) {
-  const response = await fetch("/answer", {
+  const response = await fetch(apiUrl("/answer"), {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -389,7 +412,7 @@ async function sendMeetingAudioChunk(blob) {
   try {
     const formData = new FormData();
     formData.append("file", blob, getAudioFileName(blob.type || ""));
-    const response = await fetch("/transcribe-audio", {
+    const response = await fetch(apiUrl("/transcribe-audio"), {
       method: "POST",
       body: formData
     });
@@ -570,7 +593,7 @@ function loadState() {
 
 async function checkBackend() {
   try {
-    const response = await fetch("/health");
+    const response = await fetch(apiUrl("/health"));
     const payload = await response.json();
     if (payload.provider === "ollama") {
       setConnectionStatus(`Ollama | ${payload.ollamaModel}`, "neutral");
@@ -578,7 +601,7 @@ async function checkBackend() {
     }
     setConnectionStatus(payload.geminiConfigured ? "Gemini ready" : "Set GEMINI_API_KEY", payload.geminiConfigured ? "" : "error");
   } catch (error) {
-    setConnectionStatus("Backend unavailable", "error");
+    setConnectionStatus(window.location.hostname.endsWith("github.io") ? "Start local backend" : "Backend unavailable", "error");
   }
 }
 
@@ -593,7 +616,7 @@ elements.knowledgeFile.addEventListener("change", async (event) => {
   try {
     const formData = new FormData();
     formData.append("file", file);
-    const response = await fetch("/knowledge", {
+    const response = await fetch(apiUrl("/knowledge"), {
       method: "POST",
       body: formData
     });
