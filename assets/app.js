@@ -33,7 +33,7 @@ const DOCUMENT_MATCH_THRESHOLD = 50;
 const MAX_LOCAL_ANSWER_WORDS = 180;
 const MEETING_AUDIO_SEGMENT_MS = 20000;
 const MEETING_AUTO_ANSWER_COOLDOWN_MS = 30000;
-const QUESTION_STARTERS = /^(what|why|how|who|when|where|which|can|could|would|should|do|does|did|tell|explain|describe)\b/i;
+const MIN_MEETING_AUTO_ANSWER_WORDS = 4;
 
 let recognition = null;
 let lastMeetingAnswerAt = 0;
@@ -297,15 +297,15 @@ async function answerQuestion(question) {
   }
 }
 
-function looksLikeQuestion(text) {
+function shouldAnswerMeetingTranscript(text) {
   const cleanText = text.trim();
   const words = tokenize(cleanText);
-  return cleanText.endsWith("?") || (words.length >= 4 && QUESTION_STARTERS.test(cleanText));
+  return cleanText.endsWith("?") || words.length >= MIN_MEETING_AUTO_ANSWER_WORDS;
 }
 
 async function maybeAnswerMeetingTranscript(transcript) {
   const cleanTranscript = transcript.trim();
-  if (!looksLikeQuestion(cleanTranscript)) {
+  if (!shouldAnswerMeetingTranscript(cleanTranscript)) {
     elements.answerSource.textContent = "Transcript only";
     return;
   }
