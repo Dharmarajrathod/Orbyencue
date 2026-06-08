@@ -285,6 +285,7 @@ p {
   width: min(360px, 100%);
 }
 
+.shareRow,
 .listenRow {
   display: grid;
   gap: 10px;

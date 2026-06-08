@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ORBYNECUE</title>
     <link rel="icon" href="icon.png">
-    <link rel="stylesheet" href="assets/styles.css?v=20260608-2">
+    <link rel="stylesheet" href="assets/styles.css?v=20260608-3">
   </head>
   <body>
     <div class="appShell">
@@ -53,10 +53,13 @@
           <p>Meeting questions, document context, and AI answers from live meeting audio and uploaded knowledge sources.</p>
 
           <div class="audioControls" aria-label="Meeting audio controls">
-            <button id="startMeetingAudio" type="button">Share Meeting Audio</button>
+            <div class="shareRow">
+              <button id="startMeetingAudio" type="button">Share Meeting Audio</button>
+              <button id="stopMeetingAudio" type="button" class="secondary" disabled>Stop Sharing</button>
+            </div>
             <div class="listenRow">
               <button id="startListening" type="button" class="secondary" disabled>Listen</button>
-              <button id="stopListening" type="button" class="danger" disabled>Stop</button>
+              <button id="stopListening" type="button" class="danger" disabled>Stop Listening</button>
             </div>
             <div class="audioStatusLine">
               <span id="meetingAudioStatus">Not shared</span>
@@ -81,6 +84,6 @@
       </main>
     </div>
 
-    <script src="assets/app.js?v=20260608-2"></script>
+    <script src="assets/app.js?v=20260608-3"></script>
   </body>
 </html>

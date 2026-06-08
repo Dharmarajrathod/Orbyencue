@@ -21,6 +21,7 @@ const elements = {
   settingsButton: document.querySelector("#settingsButton"),
   startListening: document.querySelector("#startListening"),
   startMeetingAudio: document.querySelector("#startMeetingAudio"),
+  stopMeetingAudio: document.querySelector("#stopMeetingAudio"),
   stopListening: document.querySelector("#stopListening"),
   listeningStatus: document.querySelector("#listeningStatus")
 };
@@ -89,8 +90,9 @@ function updateAudioStatus() {
   setStatus(elements.audioSharedStatus, meetingAudioShared ? "Audio Shared" : "Audio Not Shared", meetingAudioShared ? "" : "neutral");
   setStatus(elements.listeningStatus, meetingListening ? "Listening" : "Idle", meetingListening ? "" : "neutral");
   elements.startMeetingAudio.disabled = meetingAudioShared;
+  elements.stopMeetingAudio.disabled = !meetingAudioShared;
   elements.startListening.disabled = !meetingAudioShared || meetingListening;
-  elements.stopListening.disabled = !meetingAudioShared && !meetingListening;
+  elements.stopListening.disabled = !meetingListening;
 }
 
 function updateDocumentStatus() {
@@ -693,13 +695,21 @@ function startListeningSession() {
   recordNextMeetingAudioSegment();
 }
 
-function stopMeetingAudioSession() {
+function stopListeningSession() {
   meetingListening = false;
-  meetingAudioShared = false;
 
   if (meetingAudioRecorder && meetingAudioRecorder.state !== "inactive") {
     meetingAudioRecorder.stop();
   }
+  setMeetingAudioStatus(meetingAudioShared ? "Audio shared" : "Not shared");
+  updateAudioStatus();
+  updateContextIndicator();
+}
+
+function stopMeetingAudioSession() {
+  stopListeningSession();
+  meetingAudioShared = false;
+
   if (meetingAudioStream) {
     meetingAudioStream.getTracks().forEach((track) => track.stop());
     meetingAudioStream = null;
@@ -833,6 +843,10 @@ elements.startListening.addEventListener("click", () => {
 });
 
 elements.stopListening.addEventListener("click", () => {
+  stopListeningSession();
+});
+
+elements.stopMeetingAudio.addEventListener("click", () => {
   stopMeetingAudioSession();
 });
 
