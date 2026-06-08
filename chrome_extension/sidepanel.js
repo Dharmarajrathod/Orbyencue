@@ -13,6 +13,7 @@ const elements = {
 };
 
 const storageKey = "orbynecueKnowledge";
+const DOCUMENT_MATCH_THRESHOLD = 0.4;
 let recognition = null;
 let chunks = [];
 
@@ -98,32 +99,17 @@ function renderAnswer(question) {
   }
 
   const matches = getBestChunks(trimmed);
-  if (!matches.length) {
-    elements.answer.textContent = "No matching knowledge found. Upload a relevant text, markdown, CSV, or JSON file first.";
+  if (!matches.length || matches[0].score <= DOCUMENT_MATCH_THRESHOLD) {
+    elements.answer.textContent = "No document answer found above 40% match.";
     return;
   }
 
-  const points = [];
-  for (const match of matches) {
-    for (const sentence of sentenceMatches(trimmed, match.chunk)) {
-      if (!points.includes(sentence)) {
-        points.push(sentence);
-      }
-      if (points.length >= 3) {
-        break;
-      }
-    }
-    if (points.length >= 3) {
-      break;
-    }
-  }
+  const bestSentence = sentenceMatches(trimmed, matches[0].chunk)[0] || matches[0].chunk.slice(0, 240);
 
   const list = document.createElement("ol");
-  for (const point of points.length ? points : matches.map((item) => item.chunk.slice(0, 240))) {
-    const item = document.createElement("li");
-    item.textContent = point;
-    list.appendChild(item);
-  }
+  const item = document.createElement("li");
+  item.textContent = bestSentence;
+  list.appendChild(item);
 
   elements.answer.replaceChildren(list);
 }

@@ -35,7 +35,7 @@ const STORAGE_KEYS = {
 };
 
 const DEFAULT_LOCAL_BACKEND_URL = "http://127.0.0.1:8000";
-const DOCUMENT_MATCH_THRESHOLD = 50;
+const DOCUMENT_MATCH_THRESHOLD = 40;
 const MAX_LOCAL_ANSWER_WORDS = 180;
 const MAX_CONTEXT_WORDS = 520;
 const MEETING_AUDIO_SEGMENT_MS = 20000;
@@ -214,22 +214,14 @@ function extractAnswerSection(question, chunk) {
 }
 
 function localAnswer(question, scoredChunks) {
-  const points = [];
-  for (const match of scoredChunks) {
-    const section = extractAnswerSection(question, match.chunk);
-    const source = match.filename ? `${match.filename}: ` : "";
-    const point = `${source}${section}`;
-    if (section && !points.includes(point)) {
-      points.push(point);
-    }
-    if (points.length >= 3) {
-      break;
-    }
+  const bestMatch = scoredChunks[0];
+  if (!bestMatch) {
+    return "";
   }
 
-  return points
-    .map((point, index) => `${index + 1}. **Document Match**: ${point}`)
-    .join("\n");
+  const section = extractAnswerSection(question, bestMatch.chunk);
+  const source = bestMatch.filename ? `${bestMatch.filename}: ` : "";
+  return `1. **Document Match**: ${source}${section}`;
 }
 
 function formatAnswer(answer) {
@@ -414,7 +406,7 @@ async function answerQuestion(question, options = {}) {
   const confidence = matches.length ? Math.round(matches[0].score * 10000) / 100 : 0;
 
   try {
-    if (matches.length && confidence >= DOCUMENT_MATCH_THRESHOLD && !meetingTranscript.length) {
+    if (matches.length && confidence > DOCUMENT_MATCH_THRESHOLD && !meetingTranscript.length) {
       const answer = localAnswer(trimmed, matches);
       updateMessage(assistantMessageId, answer, `Documents | Match: ${confidence}%`);
       addHistory(trimmed, `Document match ${confidence}%`);

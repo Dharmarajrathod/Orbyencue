@@ -41,7 +41,7 @@ For Gemini fallback answers, users need a Gemini API key:
 GEMINI_API_KEY=your_key
 ```
 
-Without a Gemini key, document answers still work when the document match is 50% or higher.
+Without a Gemini key, document answers still work when the document match is above 40%.
 
 ## Windows Audio Notes
 

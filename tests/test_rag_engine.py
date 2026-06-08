@@ -62,13 +62,13 @@ def test_local_fallback_returns_complete_section_after_matching_question(monkeyp
 
     answer, confidence = rag_engine.answer_from_document("tell me about yourself")
 
-    assert confidence >= 50
+    assert confidence > 40
     assert "Tell me about yourself" in answer
     assert "learning and development professional" in answer
     assert "Why are you a good fit" not in answer
 
 
-def test_local_fallback_requires_at_least_50_percent_match(monkeypatch):
+def test_local_fallback_requires_more_than_40_percent_match(monkeypatch):
     monkeypatch.setattr(
         rag_engine,
         "DOCUMENT_CHUNKS",
@@ -76,10 +76,28 @@ def test_local_fallback_requires_at_least_50_percent_match(monkeypatch):
     )
     monkeypatch.setattr(rag_engine, "DOCUMENT_EMBEDDINGS", [])
 
-    answer, confidence = rag_engine.answer_from_document("quota unrelated words")
+    answer, confidence = rag_engine.answer_from_document("quota billing unrelated extra words")
 
-    assert confidence < 50
+    assert confidence == 40.0
     assert answer is None
+
+
+def test_local_fallback_returns_only_one_document_answer(monkeypatch):
+    monkeypatch.setattr(
+        rag_engine,
+        "DOCUMENT_CHUNKS",
+        [
+            "Quota billing failure means embeddings cannot be created, but local keyword search still works.",
+            "Quota billing alerts should be checked before retrying document processing.",
+        ],
+    )
+    monkeypatch.setattr(rag_engine, "DOCUMENT_EMBEDDINGS", [])
+
+    answer, confidence = rag_engine.answer_from_document("Why did quota billing embeddings fail?")
+
+    assert confidence > 40
+    assert answer.count("**Complete Answer**") == 1
+    assert "\n2." not in answer
 
 
 def test_answer_from_gemini_uses_configured_client(monkeypatch):

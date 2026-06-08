@@ -18,7 +18,7 @@ client = None
 gemini_client = None
 
 TOP_K = 4
-DOCUMENT_MATCH_THRESHOLD = 50.0
+DOCUMENT_MATCH_THRESHOLD = 40.0
 MAX_LOCAL_ANSWER_WORDS = 180
 DEFAULT_GEMINI_MODELS = [
     "gemini-2.5-flash-lite",
@@ -130,19 +130,12 @@ def extract_answer_section(question: str, chunk: str):
 
 
 def local_answer_from_context(question: str, scored_chunks):
-    points = []
-    for _, chunk in scored_chunks[:TOP_K]:
-        section = extract_answer_section(question, chunk)
-        if section and section not in points:
-            points.append(section)
-        if len(points) >= 3:
-            break
+    if not scored_chunks:
+        return ""
 
-    lines = []
-    for index, point in enumerate(points[:3], start=1):
-        lines.append(f"{index}. **Complete Answer**: {point}")
-
-    return "\n".join(lines)
+    _, chunk = scored_chunks[0]
+    section = extract_answer_section(question, chunk)
+    return f"1. **Complete Answer**: {section}"
 
 
 def answer_from_local_document(question: str):
@@ -153,7 +146,7 @@ def answer_from_local_document(question: str):
         return None, 0.0
 
     confidence = round(scores[0][0] * 100, 2)
-    if confidence < DOCUMENT_MATCH_THRESHOLD:
+    if confidence <= DOCUMENT_MATCH_THRESHOLD:
         return None, confidence
 
     return local_answer_from_context(question, scores), confidence
@@ -187,31 +180,27 @@ def answer_from_document(question: str):
 
     best_score = scores[0][0]
     confidence = round(best_score * 100, 2)
-    if confidence < DOCUMENT_MATCH_THRESHOLD:
+    if confidence <= DOCUMENT_MATCH_THRESHOLD:
         return None, confidence
 
-    context = "\n\n".join(chunk for _, chunk in scores[:TOP_K])
+    context = scores[0][1]
 
     prompt = f"""
 You are an interview assistant.
 
 STRICT OUTPUT RULES (MANDATORY):
-- The answer MUST be structured as a numbered list.
-- Each point MUST follow this exact format:
+- The answer MUST contain exactly one numbered item.
+- The answer MUST follow this exact format:
 
-1. **2-3 word heading**: explanation in exactly two short lines.
-2. **2–3 word heading**: explanation in exactly two short lines.
-3. **2–3 word heading**: explanation in exactly two short lines.
+1. **Complete Answer**: one concise, factual answer from the context.
 
-- Headings MUST be bold.
-- Headings MUST be only 2-3 words (no more).
-- Each explanation MUST be exactly two lines (concise, factual).
+- The heading MUST be bold.
 - Do NOT use bullet points.
 - Do NOT write paragraphs.
 - Do NOT add extra text before or after the list.
 - Do NOT repeat the answers.
 - Do NOT add conclusions or summaries.
-- Cover ALL relevant points from the context.
+- Use only the best matching context and answer the question directly.
 
 Context:
 {context}
