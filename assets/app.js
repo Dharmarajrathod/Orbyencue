@@ -1,51 +1,61 @@
 const elements = {
-  answerOutput: document.querySelector("#answerOutput"),
-  answerSource: document.querySelector("#answerSource"),
   askQuestion: document.querySelector("#askQuestion"),
+  audioSharedStatus: document.querySelector("#audioSharedStatus"),
+  chatForm: document.querySelector("#chatForm"),
+  chatMessages: document.querySelector("#chatMessages"),
   clearHistory: document.querySelector("#clearHistory"),
-  clearKnowledge: document.querySelector("#clearKnowledge"),
-  clearTranscript: document.querySelector("#clearTranscript"),
+  composerFile: document.querySelector("#composerFile"),
   connectionStatus: document.querySelector("#connectionStatus"),
+  contextIndicator: document.querySelector("#contextIndicator"),
+  documentDropzone: document.querySelector("#documentDropzone"),
+  documentList: document.querySelector("#documentList"),
+  documentsStatus: document.querySelector("#documentsStatus"),
   historyList: document.querySelector("#historyList"),
-  interimTranscript: document.querySelector("#interimTranscript"),
   knowledgeFile: document.querySelector("#knowledgeFile"),
   knowledgeStatus: document.querySelector("#knowledgeStatus"),
-  language: document.querySelector("#language"),
-  listeningStatus: document.querySelector("#listeningStatus"),
   manualQuestion: document.querySelector("#manualQuestion"),
   meetingAudioLevel: document.querySelector("#meetingAudioLevel"),
   meetingAudioStatus: document.querySelector("#meetingAudioStatus"),
-  speechSupport: document.querySelector("#speechSupport"),
-  startMeetingAudio: document.querySelector("#startMeetingAudio"),
+  newChat: document.querySelector("#newChat"),
+  processingStatus: document.querySelector("#processingStatus"),
+  settingsButton: document.querySelector("#settingsButton"),
   startListening: document.querySelector("#startListening"),
-  stopMeetingAudio: document.querySelector("#stopMeetingAudio"),
-  stopListening: document.querySelector("#stopListening")
+  startMeetingAudio: document.querySelector("#startMeetingAudio"),
+  stopListening: document.querySelector("#stopListening"),
+  listeningStatus: document.querySelector("#listeningStatus")
 };
 
 const STORAGE_KEYS = {
+  apiBaseUrl: "orbynecue.apiBaseUrl",
+  documents: "orbynecue.documents",
   history: "orbynecue.history",
-  knowledge: "orbynecue.knowledge",
-  apiBaseUrl: "orbynecue.apiBaseUrl"
+  messages: "orbynecue.messages",
+  meetingContext: "orbynecue.meetingContext"
 };
 
 const DEFAULT_LOCAL_BACKEND_URL = "http://127.0.0.1:8000";
 const DOCUMENT_MATCH_THRESHOLD = 50;
 const MAX_LOCAL_ANSWER_WORDS = 180;
+const MAX_CONTEXT_WORDS = 520;
 const MEETING_AUDIO_SEGMENT_MS = 20000;
 const MEETING_AUTO_ANSWER_COOLDOWN_MS = 30000;
 const MIN_MEETING_AUTO_ANSWER_WORDS = 4;
 
-let recognition = null;
+let audioOnlyStream = null;
+let documents = [];
+let history = [];
 let lastMeetingAnswerAt = 0;
 let lastMeetingAnswerText = "";
-let meetingAudioActive = false;
 let meetingAudioContext = null;
 let meetingAudioLevelTimer = null;
 let meetingAudioRecorder = null;
+let meetingAudioShared = false;
 let meetingAudioStream = null;
 let meetingAudioUploadActive = false;
-let chunks = [];
-let history = [];
+let messages = [];
+let processingCount = 0;
+let meetingListening = false;
+let meetingTranscript = [];
 
 function getApiBaseUrl() {
   const configured = localStorage.getItem(STORAGE_KEYS.apiBaseUrl) || window.ORBYNE_API_BASE_URL || "";
@@ -62,20 +72,46 @@ function getApiBaseUrl() {
 
 function apiUrl(path) {
   const baseUrl = getApiBaseUrl();
-  if (!baseUrl) {
-    return path;
+  return baseUrl ? `${baseUrl}${path}` : path;
+}
+
+function setStatus(element, text, state = "neutral") {
+  element.textContent = text;
+  element.className = `statusPill ${state}`;
+}
+
+function setProcessing(active) {
+  processingCount = Math.max(0, processingCount + (active ? 1 : -1));
+  setStatus(elements.processingStatus, processingCount ? "Processing" : "Idle", processingCount ? "warning" : "neutral");
+}
+
+function updateAudioStatus() {
+  setStatus(elements.audioSharedStatus, meetingAudioShared ? "Audio Shared" : "Audio Not Shared", meetingAudioShared ? "" : "neutral");
+  setStatus(elements.listeningStatus, meetingListening ? "Listening" : "Idle", meetingListening ? "" : "neutral");
+  elements.startMeetingAudio.disabled = meetingAudioShared;
+  elements.startListening.disabled = !meetingAudioShared || meetingListening;
+  elements.stopListening.disabled = !meetingAudioShared && !meetingListening;
+}
+
+function updateDocumentStatus() {
+  const loaded = documents.filter((doc) => doc.status === "Loaded");
+  const label = loaded.length === 1 ? "1 Document Loaded" : `${loaded.length} Documents Loaded`;
+  elements.knowledgeStatus.textContent = loaded.length ? `${loaded.length} loaded` : "0 loaded";
+  setStatus(elements.documentsStatus, label, loaded.length ? "" : "neutral");
+  updateContextIndicator();
+}
+
+function updateContextIndicator() {
+  const loadedCount = documents.filter((doc) => doc.status === "Loaded").length;
+  if (meetingListening && loadedCount) {
+    elements.contextIndicator.textContent = `Meeting + Documents | ${loadedCount} document${loadedCount === 1 ? "" : "s"} loaded`;
+  } else if (meetingListening) {
+    elements.contextIndicator.textContent = "Meeting Audio Active";
+  } else if (loadedCount) {
+    elements.contextIndicator.textContent = `${loadedCount} Document${loadedCount === 1 ? "" : "s"} Loaded`;
+  } else {
+    elements.contextIndicator.textContent = "Idle";
   }
-  return `${baseUrl}${path}`;
-}
-
-function setConnectionStatus(text, state = "neutral") {
-  elements.connectionStatus.textContent = text;
-  elements.connectionStatus.className = `statusPill ${state}`;
-}
-
-function setListeningStatus(text, state = "neutral") {
-  elements.listeningStatus.textContent = text;
-  elements.listeningStatus.className = `statusPill ${state}`;
 }
 
 function setMeetingAudioStatus(text) {
@@ -88,7 +124,7 @@ function setMeetingAudioLevel(value) {
 }
 
 function escapeHtml(value) {
-  return value
+  return String(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
@@ -104,33 +140,8 @@ function tokenize(text) {
     .filter((word) => word.length > 2);
 }
 
-function chunkText(text, maxWords = 220) {
-  const paragraphs = text
-    .split(/\n+/)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean);
-
-  const result = [];
-  let buffer = [];
-
-  for (const paragraph of paragraphs) {
-    const words = paragraph.split(/\s+/);
-    if (buffer.length + words.length > maxWords && buffer.length) {
-      result.push(buffer.join(" "));
-      buffer = [];
-    }
-    buffer.push(...words);
-  }
-
-  if (buffer.length) {
-    result.push(buffer.join(" "));
-  }
-
-  return result;
-}
-
 function compactText(text, maxWords = MAX_LOCAL_ANSWER_WORDS) {
-  const words = text.split(/\s+/);
+  const words = text.split(/\s+/).filter(Boolean);
   if (words.length <= maxWords) {
     return words.join(" ");
   }
@@ -140,20 +151,22 @@ function compactText(text, maxWords = MAX_LOCAL_ANSWER_WORDS) {
 function scoreChunk(questionWords, chunk) {
   const chunkWords = new Set(tokenize(chunk));
   let hits = 0;
-
   for (const word of questionWords) {
     if (chunkWords.has(word)) {
       hits += 1;
     }
   }
-
   return hits / Math.max(questionWords.length, 1);
+}
+
+function getAllChunks() {
+  return documents.flatMap((doc) => (doc.chunks || []).map((chunk) => ({ chunk, filename: doc.name })));
 }
 
 function getBestChunks(question, count = 4) {
   const questionWords = tokenize(question);
-  return chunks
-    .map((chunk) => ({ chunk, score: scoreChunk(questionWords, chunk) }))
+  return getAllChunks()
+    .map((entry) => ({ ...entry, score: scoreChunk(questionWords, entry.chunk) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, count);
 }
@@ -202,8 +215,10 @@ function localAnswer(question, scoredChunks) {
   const points = [];
   for (const match of scoredChunks) {
     const section = extractAnswerSection(question, match.chunk);
-    if (section && !points.includes(section)) {
-      points.push(section);
+    const source = match.filename ? `${match.filename}: ` : "";
+    const point = `${source}${section}`;
+    if (section && !points.includes(point)) {
+      points.push(point);
     }
     if (points.length >= 3) {
       break;
@@ -236,9 +251,103 @@ function formatAnswer(answer) {
     .join("")}</ol>`;
 }
 
-function renderAnswer(answer, source) {
-  elements.answerOutput.innerHTML = formatAnswer(answer);
-  elements.answerSource.textContent = source;
+function saveMessages() {
+  localStorage.setItem(STORAGE_KEYS.messages, JSON.stringify(messages.slice(-50)));
+}
+
+function saveDocuments() {
+  localStorage.setItem(STORAGE_KEYS.documents, JSON.stringify(documents));
+}
+
+function saveMeetingContext() {
+  localStorage.setItem(STORAGE_KEYS.meetingContext, JSON.stringify(meetingTranscript.slice(-20)));
+}
+
+function addHistory(question, source) {
+  history = [{ question, source, at: new Date().toLocaleTimeString() }, ...history].slice(0, 20);
+  localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(history));
+  renderHistory();
+}
+
+function contextLabel() {
+  const loadedCount = documents.filter((doc) => doc.status === "Loaded").length;
+  if (meetingListening && loadedCount) {
+    return `Meeting + Documents | ${loadedCount} doc${loadedCount === 1 ? "" : "s"}`;
+  }
+  if (meetingListening) {
+    return "Meeting Audio Active";
+  }
+  if (loadedCount) {
+    return `${loadedCount} Document${loadedCount === 1 ? "" : "s"} Loaded`;
+  }
+  return "No context loaded";
+}
+
+function addMessage(role, content, meta = contextLabel()) {
+  const message = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    role,
+    content,
+    meta
+  };
+  messages.push(message);
+  saveMessages();
+  renderMessages();
+  return message.id;
+}
+
+function updateMessage(id, content, meta) {
+  messages = messages.map((message) => (message.id === id ? { ...message, content, meta: meta || message.meta } : message));
+  saveMessages();
+  renderMessages();
+}
+
+function renderMessages() {
+  if (!messages.length) {
+    elements.chatMessages.innerHTML = "";
+    return;
+  }
+
+  elements.chatMessages.innerHTML = messages
+    .map((message) => `<article class="message ${message.role}">
+      <div class="messageMeta">${escapeHtml(message.meta || "")}</div>
+      <div class="bubble">${message.role === "assistant" ? formatAnswer(message.content) : escapeHtml(message.content)}</div>
+    </article>`)
+    .join("");
+  elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+}
+
+function renderHistory() {
+  if (!history.length) {
+    elements.historyList.textContent = "No conversations yet.";
+    return;
+  }
+
+  elements.historyList.innerHTML = history
+    .map((item) => `<button type="button" class="historyItem" data-question="${escapeHtml(item.question)}">
+      <strong>${escapeHtml(item.question)}</strong>
+      <span>${escapeHtml(item.source)} | ${escapeHtml(item.at)}</span>
+    </button>`)
+    .join("");
+}
+
+function renderDocuments() {
+  if (!documents.length) {
+    elements.documentList.textContent = "No documents uploaded.";
+    updateDocumentStatus();
+    return;
+  }
+
+  elements.documentList.innerHTML = documents
+    .map((doc) => `<div class="documentItem" data-id="${escapeHtml(doc.id)}">
+      <div>
+        <div class="documentName">File: ${escapeHtml(doc.name)}</div>
+        <div class="documentMeta">${escapeHtml(doc.status)}${doc.chunkCount ? ` | ${doc.chunkCount} chunks` : ""}</div>
+      </div>
+      <button type="button" class="removeDocument" aria-label="Remove ${escapeHtml(doc.name)}">Remove</button>
+    </div>`)
+    .join("");
+  updateDocumentStatus();
 }
 
 async function callAi(question) {
@@ -251,7 +360,6 @@ async function callAi(question) {
   });
 
   const payload = await response.json().catch(() => ({}));
-
   if (!response.ok) {
     const message = payload.detail || `Backend request failed with ${response.status}`;
     const error = new Error(message);
@@ -266,125 +374,109 @@ async function callAi(question) {
   return payload;
 }
 
-async function answerQuestion(question) {
+function buildContextualQuestion(question, matches) {
+  const contextParts = [];
+  const recentMeeting = meetingTranscript.slice(-6).join(" ");
+  if (recentMeeting) {
+    contextParts.push(`Meeting audio context:\n${compactText(recentMeeting, MAX_CONTEXT_WORDS)}`);
+  }
+
+  if (matches.length) {
+    const documentContext = matches
+      .map((match) => `${match.filename}: ${compactText(match.chunk, 120)}`)
+      .join("\n\n");
+    contextParts.push(`Uploaded document context:\n${documentContext}`);
+  }
+
+  if (!contextParts.length) {
+    return question;
+  }
+
+  return `${contextParts.join("\n\n")}\n\nUser question:\n${question}\n\nAnswer using the meeting audio context, uploaded document context, or both when relevant.`;
+}
+
+async function answerQuestion(question, options = {}) {
   const trimmed = question.trim();
   if (!trimmed) {
     return;
   }
 
-  elements.interimTranscript.textContent = trimmed;
-  elements.answerOutput.textContent = "Thinking...";
-  elements.answerSource.textContent = "Processing";
+  if (!options.silentUserMessage) {
+    addMessage("user", trimmed, contextLabel());
+  }
+
+  const assistantMessageId = addMessage("assistant", "Thinking...", "Processing");
+  setProcessing(true);
 
   const matches = getBestChunks(trimmed);
   const confidence = matches.length ? Math.round(matches[0].score * 10000) / 100 : 0;
 
   try {
-    if (matches.length && confidence >= DOCUMENT_MATCH_THRESHOLD) {
+    if (matches.length && confidence >= DOCUMENT_MATCH_THRESHOLD && !meetingTranscript.length) {
       const answer = localAnswer(trimmed, matches);
-      renderAnswer(answer, `Document | Match: ${confidence}%`);
+      updateMessage(assistantMessageId, answer, `Documents | Match: ${confidence}%`);
       addHistory(trimmed, `Document match ${confidence}%`);
       return;
     }
 
-    const result = await callAi(trimmed);
-    renderAnswer(result.answer, result.model);
+    const result = await callAi(buildContextualQuestion(trimmed, matches));
+    updateMessage(assistantMessageId, result.answer, contextLabel());
     addHistory(trimmed, result.model);
   } catch (error) {
-    elements.answerOutput.textContent = `Error: ${error.message}`;
-    elements.answerSource.textContent = "Error";
+    updateMessage(assistantMessageId, `Error: ${error.message}`, "Error");
     addHistory(trimmed, "Error");
+  } finally {
+    setProcessing(false);
   }
 }
 
-function shouldAnswerMeetingTranscript(text) {
-  const cleanText = text.trim();
-  const words = tokenize(cleanText);
-  return cleanText.endsWith("?") || words.length >= MIN_MEETING_AUTO_ANSWER_WORDS;
-}
+async function uploadDocument(file) {
+  const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const pendingDocument = { id, name: file.name, status: "Uploading", chunkCount: 0, chunks: [] };
+  documents = [pendingDocument, ...documents];
+  saveDocuments();
+  renderDocuments();
+  setProcessing(true);
 
-async function maybeAnswerMeetingTranscript(transcript) {
-  const cleanTranscript = transcript.trim();
-  if (!shouldAnswerMeetingTranscript(cleanTranscript)) {
-    elements.answerSource.textContent = "Transcript only";
-    return;
-  }
-
-  const now = Date.now();
-  const normalized = cleanTranscript.toLowerCase();
-  if (normalized === lastMeetingAnswerText) {
-    return;
-  }
-  if (now - lastMeetingAnswerAt < MEETING_AUTO_ANSWER_COOLDOWN_MS) {
-    elements.answerSource.textContent = "Waiting for cooldown";
-    return;
-  }
-
-  lastMeetingAnswerAt = now;
-  lastMeetingAnswerText = normalized;
-  await answerQuestion(cleanTranscript);
-}
-
-function addHistory(question, source) {
-  history = [{ question, source, at: new Date().toLocaleTimeString() }, ...history].slice(0, 20);
-  localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(history));
-  renderHistory();
-}
-
-function renderHistory() {
-  if (!history.length) {
-    elements.historyList.textContent = "No questions yet.";
-    return;
-  }
-
-  elements.historyList.innerHTML = history
-    .map(
-      (item) => `<button type="button" class="historyItem" data-question="${escapeHtml(item.question)}">
-        <strong>${escapeHtml(item.question)}</strong>
-        <span>${escapeHtml(item.source)} · ${escapeHtml(item.at)}</span>
-      </button>`
-    )
-    .join("");
-}
-
-function createRecognition() {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
-    throw new Error("Speech recognition is available in Chrome and Edge. Use manual questions in this browser.");
-  }
-
-  const nextRecognition = new SpeechRecognition();
-  nextRecognition.lang = elements.language.value;
-  nextRecognition.continuous = true;
-  nextRecognition.interimResults = true;
-
-  nextRecognition.onresult = (event) => {
-    for (let index = event.resultIndex; index < event.results.length; index += 1) {
-      const result = event.results[index];
-      const text = result[0].transcript.trim();
-      if (!text) {
-        continue;
-      }
-
-      elements.interimTranscript.textContent = text;
-      if (result.isFinal) {
-        answerQuestion(text);
-      }
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    const response = await fetch(apiUrl("/knowledge"), {
+      method: "POST",
+      body: formData
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || `File upload failed with ${response.status}`);
     }
-  };
 
-  nextRecognition.onerror = (event) => {
-    setListeningStatus("Speech error", "error");
-    elements.answerOutput.textContent = event.error || "Speech recognition failed.";
-  };
+    documents = documents.map((doc) => doc.id === id
+      ? {
+          ...doc,
+          name: payload.filename || file.name,
+          status: "Loaded",
+          chunkCount: payload.chunkCount || 0,
+          chunks: payload.chunks || []
+        }
+      : doc);
+  } catch (error) {
+    documents = documents.map((doc) => doc.id === id
+      ? { ...doc, status: `Failed: ${error.message}`, chunkCount: 0, chunks: [] }
+      : doc);
+  } finally {
+    saveDocuments();
+    renderDocuments();
+    setProcessing(false);
+  }
+}
 
-  nextRecognition.onend = () => {
-    elements.startListening.disabled = false;
-    elements.stopListening.disabled = true;
-    setListeningStatus("Idle", "neutral");
-  };
-
-  return nextRecognition;
+async function uploadDocuments(fileList) {
+  const files = Array.from(fileList || []);
+  for (const file of files) {
+    await uploadDocument(file);
+  }
+  elements.knowledgeFile.value = "";
+  elements.composerFile.value = "";
 }
 
 function getSupportedAudioMimeType() {
@@ -397,10 +489,33 @@ function getSupportedAudioMimeType() {
 }
 
 function getAudioFileName(mimeType) {
-  if (mimeType.includes("mp4")) {
-    return "meeting-audio.mp4";
+  return mimeType.includes("mp4") ? "meeting-audio.mp4" : "meeting-audio.webm";
+}
+
+function shouldAnswerMeetingTranscript(text) {
+  const cleanText = text.trim();
+  const words = tokenize(cleanText);
+  return cleanText.endsWith("?") || words.length >= MIN_MEETING_AUTO_ANSWER_WORDS;
+}
+
+async function maybeAnswerMeetingTranscript(transcript) {
+  const cleanTranscript = transcript.trim();
+  if (!shouldAnswerMeetingTranscript(cleanTranscript)) {
+    return;
   }
-  return "meeting-audio.webm";
+
+  const now = Date.now();
+  const normalized = cleanTranscript.toLowerCase();
+  if (normalized === lastMeetingAnswerText) {
+    return;
+  }
+  if (now - lastMeetingAnswerAt < MEETING_AUTO_ANSWER_COOLDOWN_MS) {
+    return;
+  }
+
+  lastMeetingAnswerAt = now;
+  lastMeetingAnswerText = normalized;
+  await answerQuestion(cleanTranscript);
 }
 
 async function sendMeetingAudioChunk(blob) {
@@ -409,6 +524,7 @@ async function sendMeetingAudioChunk(blob) {
   }
 
   meetingAudioUploadActive = true;
+  setProcessing(true);
   try {
     const formData = new FormData();
     formData.append("file", blob, getAudioFileName(blob.type || ""));
@@ -425,26 +541,28 @@ async function sendMeetingAudioChunk(blob) {
 
     const transcript = (payload.transcript || "").trim();
     if (transcript) {
-      elements.interimTranscript.textContent = transcript;
+      meetingTranscript.push(transcript);
+      meetingTranscript = meetingTranscript.slice(-20);
+      saveMeetingContext();
       await maybeAnswerMeetingTranscript(transcript);
     }
   } catch (error) {
-    elements.answerOutput.textContent = `Meeting audio error: ${error.message}`;
-    elements.answerSource.textContent = "Error";
+    addMessage("assistant", `Meeting audio error: ${error.message}`, "Error");
     if (error.status === 429) {
-      stopMeetingAudioCapture();
+      stopMeetingAudioSession();
       setMeetingAudioStatus("Quota exhausted");
     }
   } finally {
     meetingAudioUploadActive = false;
+    setProcessing(false);
   }
 }
 
-function startMeetingAudioMeter(audioStream) {
+function startMeetingAudioMeter(stream) {
   stopMeetingAudioMeter();
   const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
   meetingAudioContext = new AudioContextConstructor();
-  const source = meetingAudioContext.createMediaStreamSource(audioStream);
+  const source = meetingAudioContext.createMediaStreamSource(stream);
   const analyser = meetingAudioContext.createAnalyser();
   analyser.fftSize = 1024;
   source.connect(analyser);
@@ -466,11 +584,11 @@ function startMeetingAudioMeter(audioStream) {
 
     if (rms > 0.018) {
       silentTicks = 0;
-      setMeetingAudioStatus("Audio detected");
+      setMeetingAudioStatus(meetingListening ? "Listening..." : "Audio shared");
     } else {
       silentTicks += 1;
       if (silentTicks >= 8) {
-        setMeetingAudioStatus("No audio detected");
+        setMeetingAudioStatus(meetingListening ? "Listening... no audio detected" : "Shared, no audio detected");
       }
     }
   }, 500);
@@ -488,14 +606,14 @@ function stopMeetingAudioMeter() {
   setMeetingAudioLevel(0);
 }
 
-function recordNextMeetingAudioSegment(audioStream) {
-  if (!meetingAudioActive) {
+function recordNextMeetingAudioSegment() {
+  if (!meetingListening || !audioOnlyStream) {
     return;
   }
 
   const mimeType = getSupportedAudioMimeType();
   const segmentParts = [];
-  meetingAudioRecorder = new MediaRecorder(audioStream, mimeType ? { mimeType } : undefined);
+  meetingAudioRecorder = new MediaRecorder(audioOnlyStream, mimeType ? { mimeType } : undefined);
 
   meetingAudioRecorder.addEventListener("dataavailable", (event) => {
     if (event.data?.size) {
@@ -509,8 +627,8 @@ function recordNextMeetingAudioSegment(audioStream) {
       sendMeetingAudioChunk(blob);
     }
 
-    if (meetingAudioActive) {
-      window.setTimeout(() => recordNextMeetingAudioSegment(audioStream), 250);
+    if (meetingListening) {
+      window.setTimeout(recordNextMeetingAudioSegment, 250);
     }
   });
 
@@ -522,9 +640,9 @@ function recordNextMeetingAudioSegment(audioStream) {
   }, MEETING_AUDIO_SEGMENT_MS);
 }
 
-async function startMeetingAudioCapture() {
+async function shareMeetingAudio() {
   if (!navigator.mediaDevices?.getDisplayMedia) {
-    throw new Error("Meeting audio capture needs Chrome or Edge screen/tab sharing.");
+    throw new Error("Meeting audio sharing needs Chrome or Edge screen/tab sharing.");
   }
   if (!window.MediaRecorder) {
     throw new Error("This browser does not support MediaRecorder audio capture.");
@@ -548,25 +666,37 @@ async function startMeetingAudioCapture() {
   if (!audioTracks.length) {
     meetingAudioStream.getTracks().forEach((track) => track.stop());
     meetingAudioStream = null;
-    throw new Error("No shared audio found. Choose a tab/screen with audio sharing enabled.");
+    throw new Error("No shared audio found. Choose a tab or screen with audio sharing enabled.");
   }
 
-  const audioOnlyStream = new MediaStream(audioTracks);
-
+  audioOnlyStream = new MediaStream(audioTracks);
   for (const track of meetingAudioStream.getTracks()) {
-    track.addEventListener("ended", stopMeetingAudioCapture);
+    track.addEventListener("ended", stopMeetingAudioSession);
   }
 
-  meetingAudioActive = true;
+  meetingAudioShared = true;
   startMeetingAudioMeter(audioOnlyStream);
-  recordNextMeetingAudioSegment(audioOnlyStream);
-  elements.startMeetingAudio.disabled = true;
-  elements.stopMeetingAudio.disabled = false;
-  setMeetingAudioStatus("Checking audio");
+  setMeetingAudioStatus("Audio shared");
+  updateAudioStatus();
+  updateContextIndicator();
 }
 
-function stopMeetingAudioCapture() {
-  meetingAudioActive = false;
+function startListeningSession() {
+  if (!audioOnlyStream) {
+    setMeetingAudioStatus("Share meeting audio first");
+    return;
+  }
+  meetingListening = true;
+  setMeetingAudioStatus("Listening...");
+  updateAudioStatus();
+  updateContextIndicator();
+  recordNextMeetingAudioSegment();
+}
+
+function stopMeetingAudioSession() {
+  meetingListening = false;
+  meetingAudioShared = false;
+
   if (meetingAudioRecorder && meetingAudioRecorder.state !== "inactive") {
     meetingAudioRecorder.stop();
   }
@@ -574,21 +704,11 @@ function stopMeetingAudioCapture() {
     meetingAudioStream.getTracks().forEach((track) => track.stop());
     meetingAudioStream = null;
   }
-  elements.startMeetingAudio.disabled = false;
-  elements.stopMeetingAudio.disabled = true;
+  audioOnlyStream = null;
   stopMeetingAudioMeter();
   setMeetingAudioStatus("Not shared");
-}
-
-function loadState() {
-  chunks = JSON.parse(localStorage.getItem(STORAGE_KEYS.knowledge) || "[]");
-  history = JSON.parse(localStorage.getItem(STORAGE_KEYS.history) || "[]");
-
-  elements.knowledgeStatus.textContent = chunks.length ? `${chunks.length} chunks` : "No file";
-  renderHistory();
-
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  elements.speechSupport.textContent = SpeechRecognition ? "Supported" : "Manual only";
+  updateAudioStatus();
+  updateContextIndicator();
 }
 
 async function checkBackend() {
@@ -596,111 +716,146 @@ async function checkBackend() {
     const response = await fetch(apiUrl("/health"));
     const payload = await response.json();
     if (payload.provider === "ollama") {
-      setConnectionStatus(`Ollama | ${payload.ollamaModel}`, "neutral");
+      setStatus(elements.connectionStatus, `Ollama | ${payload.ollamaModel}`, "neutral");
       return;
     }
-    setConnectionStatus(payload.geminiConfigured ? "Gemini ready" : "Set GEMINI_API_KEY", payload.geminiConfigured ? "" : "error");
+    setStatus(elements.connectionStatus, payload.geminiConfigured ? "Gemini ready" : "Set GEMINI_API_KEY", payload.geminiConfigured ? "" : "error");
   } catch (error) {
-    setConnectionStatus(window.location.hostname.endsWith("github.io") ? "Start local backend" : "Backend unavailable", "error");
+    setStatus(elements.connectionStatus, window.location.hostname.endsWith("github.io") ? "Start local backend" : "Backend unavailable", "error");
   }
 }
 
-elements.knowledgeFile.addEventListener("change", async (event) => {
-  const [file] = event.target.files;
-  if (!file) {
-    return;
+function clearChat() {
+  messages = [];
+  history = [];
+  meetingTranscript = [];
+  localStorage.removeItem(STORAGE_KEYS.messages);
+  localStorage.removeItem(STORAGE_KEYS.history);
+  localStorage.removeItem(STORAGE_KEYS.meetingContext);
+  renderMessages();
+  renderHistory();
+  updateContextIndicator();
+}
+
+function loadState() {
+  documents = JSON.parse(localStorage.getItem(STORAGE_KEYS.documents) || "[]");
+  history = JSON.parse(localStorage.getItem(STORAGE_KEYS.history) || "[]");
+  messages = JSON.parse(localStorage.getItem(STORAGE_KEYS.messages) || "[]");
+  meetingTranscript = JSON.parse(localStorage.getItem(STORAGE_KEYS.meetingContext) || "[]");
+
+  const legacyKnowledge = JSON.parse(localStorage.getItem("orbynecue.knowledge") || "[]");
+  if (!documents.length && Array.isArray(legacyKnowledge) && legacyKnowledge.length) {
+    documents = [{
+      id: "legacy-knowledge",
+      name: "Uploaded Knowledge",
+      status: "Loaded",
+      chunkCount: legacyKnowledge.length,
+      chunks: legacyKnowledge
+    }];
+    saveDocuments();
   }
 
-  elements.knowledgeStatus.textContent = "Processing...";
-  elements.answerOutput.textContent = "";
-  try {
-    const formData = new FormData();
-    formData.append("file", file);
-    const response = await fetch(apiUrl("/knowledge"), {
-      method: "POST",
-      body: formData
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(payload.detail || `File upload failed with ${response.status}`);
-    }
+  renderDocuments();
+  renderHistory();
+  renderMessages();
+  updateAudioStatus();
+  updateContextIndicator();
+}
 
-    chunks = payload.chunks || [];
-    localStorage.setItem(STORAGE_KEYS.knowledge, JSON.stringify(chunks));
-    elements.knowledgeStatus.textContent = `${payload.filename} · ${payload.chunkCount} chunks`;
-  } catch (error) {
-    chunks = [];
-    localStorage.removeItem(STORAGE_KEYS.knowledge);
-    elements.knowledgeStatus.textContent = "Upload failed";
-    elements.answerOutput.textContent = `File processing error: ${error.message}`;
-  }
-});
-
-elements.clearKnowledge.addEventListener("click", () => {
-  chunks = [];
-  localStorage.removeItem(STORAGE_KEYS.knowledge);
-  elements.knowledgeFile.value = "";
-  elements.knowledgeStatus.textContent = "No file";
-});
-
-elements.askQuestion.addEventListener("click", () => {
-  answerQuestion(elements.manualQuestion.value);
+elements.chatForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const question = elements.manualQuestion.value;
+  elements.manualQuestion.value = "";
+  elements.manualQuestion.style.height = "auto";
+  answerQuestion(question);
 });
 
 elements.manualQuestion.addEventListener("keydown", (event) => {
-  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-    answerQuestion(elements.manualQuestion.value);
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    elements.chatForm.requestSubmit();
   }
 });
 
-elements.startListening.addEventListener("click", () => {
-  try {
-    recognition = createRecognition();
-    recognition.start();
-    elements.startListening.disabled = true;
-    elements.stopListening.disabled = false;
-    setListeningStatus("Listening");
-  } catch (error) {
-    elements.answerOutput.textContent = error.message;
-  }
+elements.manualQuestion.addEventListener("input", () => {
+  elements.manualQuestion.style.height = "auto";
+  elements.manualQuestion.style.height = `${Math.min(elements.manualQuestion.scrollHeight, 180)}px`;
 });
 
-elements.stopListening.addEventListener("click", () => {
-  if (recognition) {
-    recognition.stop();
+elements.knowledgeFile.addEventListener("change", (event) => {
+  uploadDocuments(event.target.files);
+});
+
+elements.composerFile.addEventListener("change", (event) => {
+  uploadDocuments(event.target.files);
+});
+
+elements.documentDropzone.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  elements.documentDropzone.classList.add("dragActive");
+});
+
+elements.documentDropzone.addEventListener("dragleave", () => {
+  elements.documentDropzone.classList.remove("dragActive");
+});
+
+elements.documentDropzone.addEventListener("drop", (event) => {
+  event.preventDefault();
+  elements.documentDropzone.classList.remove("dragActive");
+  uploadDocuments(event.dataTransfer.files);
+});
+
+elements.documentList.addEventListener("click", (event) => {
+  const removeButton = event.target.closest(".removeDocument");
+  if (!removeButton) {
+    return;
   }
+  const item = removeButton.closest(".documentItem");
+  documents = documents.filter((doc) => doc.id !== item.dataset.id);
+  saveDocuments();
+  renderDocuments();
 });
 
 elements.startMeetingAudio.addEventListener("click", async () => {
   try {
-    await startMeetingAudioCapture();
+    setProcessing(true);
+    await shareMeetingAudio();
   } catch (error) {
-    elements.answerOutput.textContent = error.message;
+    addMessage("assistant", error.message, "Audio sharing");
     setMeetingAudioStatus("Error");
+  } finally {
+    setProcessing(false);
   }
 });
 
-elements.stopMeetingAudio.addEventListener("click", () => {
-  stopMeetingAudioCapture();
+elements.startListening.addEventListener("click", () => {
+  startListeningSession();
 });
 
-elements.clearTranscript.addEventListener("click", () => {
-  elements.interimTranscript.textContent = "Waiting for speech or a typed question.";
+elements.stopListening.addEventListener("click", () => {
+  stopMeetingAudioSession();
 });
 
 elements.clearHistory.addEventListener("click", () => {
-  history = [];
-  localStorage.removeItem(STORAGE_KEYS.history);
-  renderHistory();
+  clearChat();
+});
+
+elements.newChat.addEventListener("click", () => {
+  clearChat();
+});
+
+elements.settingsButton.addEventListener("click", () => {
+  addMessage("assistant", "Settings are managed through backend environment variables for this build.", "Settings");
 });
 
 elements.historyList.addEventListener("click", (event) => {
   const item = event.target.closest(".historyItem");
   if (item) {
     elements.manualQuestion.value = item.dataset.question;
-    answerQuestion(item.dataset.question);
+    elements.manualQuestion.focus();
   }
 });
 
 loadState();
 checkBackend();
+window.scrollTo(0, 0);

@@ -8,107 +8,78 @@
     <link rel="stylesheet" href="assets/styles.css">
   </head>
   <body>
-    <main class="shell">
-      <section class="workspace" aria-label="ORBYNECUE workspace">
-        <header class="topbar">
-          <div class="brand">
-            <img src="logo.png" alt="" class="brandLogo">
-            <div>
-              <h1>ORBYNECUE</h1>
-              <p>Meeting questions, document context, and local AI answers in one browser workspace.</p>
-            </div>
+    <div class="appShell">
+      <aside class="sidebar" aria-label="ORBYNECUE navigation">
+        <button id="newChat" type="button" class="newChatButton">New Chat</button>
+
+        <section class="sideSection" aria-labelledby="recentTitle">
+          <div class="sideHeader">
+            <h2 id="recentTitle">Recent Conversations</h2>
           </div>
-          <div class="statusGroup">
-            <span id="connectionStatus" class="statusPill neutral">Checking backend</span>
-            <span id="listeningStatus" class="statusPill neutral">Idle</span>
+          <div id="historyList" class="historyList"></div>
+        </section>
+
+        <section class="sideSection" aria-labelledby="documentsTitle">
+          <div class="sideHeader">
+            <h2 id="documentsTitle">Documents Library</h2>
+            <span id="knowledgeStatus">0 loaded</span>
           </div>
+          <label id="documentDropzone" class="documentDropzone" for="knowledgeFile">
+            <input id="knowledgeFile" type="file" multiple accept=".txt,.md,.csv,.json,.pdf,.doc,.docx,.ppt,.pptx,application/pdf,application/msword,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation">
+            <strong>Upload Documents</strong>
+            <span>Drop PDF, DOCX, PPTX, TXT, CSV, JSON, or Markdown</span>
+          </label>
+          <div id="documentList" class="documentList"></div>
+        </section>
+
+        <div class="sidebarFooter">
+          <button id="settingsButton" type="button" class="ghostButton">Settings</button>
+          <button id="clearHistory" type="button" class="ghostButton">Clear Chat</button>
+        </div>
+      </aside>
+
+      <main class="chatWorkspace" aria-label="ORBYNECUE chat workspace">
+        <header class="statusBar" aria-label="Workspace status">
+          <span id="connectionStatus" class="statusPill neutral">Checking backend</span>
+          <span id="audioSharedStatus" class="statusPill neutral">Audio Not Shared</span>
+          <span id="listeningStatus" class="statusPill neutral">Idle</span>
+          <span id="processingStatus" class="statusPill neutral">Idle</span>
+          <span id="documentsStatus" class="statusPill neutral">0 Documents Loaded</span>
         </header>
 
-        <section class="grid">
-          <aside class="sidebar" aria-label="Controls">
-            <section class="toolBlock">
-              <div class="sectionHeader">
-                <h2>Knowledge</h2>
-                <span id="knowledgeStatus">No file</span>
-              </div>
-              <label class="fileDrop" for="knowledgeFile">
-                <input id="knowledgeFile" type="file" accept=".txt,.md,.csv,.json,.pdf,.doc,.docx,.ppt,.pptx,application/pdf,application/msword,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation">
-                <strong>Upload file</strong>
-                <span>PDF, Word, PowerPoint, text, markdown, CSV, or JSON</span>
-              </label>
-              <button id="clearKnowledge" type="button" class="secondary fullWidth">Clear knowledge</button>
-            </section>
+        <section class="welcomePanel" aria-label="ORBYNECUE meeting intelligence controls">
+          <img src="logo.png" alt="" class="welcomeLogo">
+          <h1>ORBYNECUE</h1>
+          <p>Meeting questions, document context, and AI answers from live meeting audio and uploaded knowledge sources.</p>
 
-            <section class="toolBlock">
-              <div class="sectionHeader">
-                <h2>Voice</h2>
-                <span id="speechSupport">Checking</span>
-              </div>
-              <label class="field">
-                <span>Language</span>
-                <select id="language">
-                  <option value="en-US">English</option>
-                  <option value="hi-IN">Hindi</option>
-                  <option value="es-ES">Spanish</option>
-                  <option value="fr-FR">French</option>
-                  <option value="de-DE">German</option>
-                  <option value="ar-SA">Arabic</option>
-                </select>
-              </label>
-              <div class="buttonRow">
-                <button id="startListening" type="button">Start</button>
-                <button id="stopListening" type="button" class="danger" disabled>Stop</button>
-              </div>
-              <div class="sectionHeader audioShareHeader">
-                <h2>Meeting Audio</h2>
-                <span id="meetingAudioStatus">Not shared</span>
-              </div>
+          <div class="audioControls" aria-label="Meeting audio controls">
+            <button id="startMeetingAudio" type="button">Share Meeting Audio</button>
+            <div class="listenRow">
+              <button id="startListening" type="button" class="secondary" disabled>Listen</button>
+              <button id="stopListening" type="button" class="danger" disabled>Stop</button>
+            </div>
+            <div class="audioStatusLine">
+              <span id="meetingAudioStatus">Not shared</span>
               <div class="audioLevel" aria-hidden="true">
                 <span id="meetingAudioLevel"></span>
               </div>
-              <div class="buttonRow">
-                <button id="startMeetingAudio" type="button" class="secondary">Share audio</button>
-                <button id="stopMeetingAudio" type="button" class="danger" disabled>Stop share</button>
-              </div>
-            </section>
-
-            <section class="toolBlock">
-              <div class="sectionHeader">
-                <h2>Ask</h2>
-              </div>
-              <textarea id="manualQuestion" rows="4" placeholder="Type a question here..."></textarea>
-              <button id="askQuestion" type="button" class="fullWidth">Ask question</button>
-            </section>
-          </aside>
-
-          <section class="mainPanel" aria-label="Answers">
-            <section class="liveQuestion">
-              <div>
-                <span class="eyebrow">Listening transcript</span>
-                <p id="interimTranscript">Waiting for speech or a typed question.</p>
-              </div>
-              <button id="clearTranscript" type="button" class="iconButton" aria-label="Clear transcript">Clear</button>
-            </section>
-
-            <section class="answerPanel">
-              <div class="sectionHeader">
-                <h2>Answer</h2>
-                <span id="answerSource">No question yet</span>
-              </div>
-              <div id="answerOutput" class="answerOutput"></div>
-            </section>
-
-            <section class="historyPanel">
-              <div class="sectionHeader">
-                <h2>History</h2>
-                <button id="clearHistory" type="button" class="secondary smallButton">Clear</button>
-              </div>
-              <div id="historyList" class="historyList"></div>
-            </section>
-          </section>
+            </div>
+          </div>
         </section>
-      </section>
-    </main>
+
+        <section class="conversationWrap" aria-live="polite">
+          <div id="contextIndicator" class="contextIndicator">Idle</div>
+          <div id="chatMessages" class="chatMessages"></div>
+        </section>
+
+        <form id="chatForm" class="chatComposer" aria-label="Ask ORBYNECUE">
+          <label class="attachButton" for="composerFile" aria-label="Attach documents">+</label>
+          <input id="composerFile" type="file" multiple accept=".txt,.md,.csv,.json,.pdf,.doc,.docx,.ppt,.pptx,application/pdf,application/msword,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation">
+          <textarea id="manualQuestion" rows="1" placeholder="Ask about your meeting, uploaded documents, or both..."></textarea>
+          <button id="askQuestion" type="submit">Send</button>
+        </form>
+      </main>
+    </div>
 
     <script src="assets/app.js"></script>
   </body>
