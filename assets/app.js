@@ -287,6 +287,14 @@ function saveMeetingContext() {
   localStorage.setItem(STORAGE_KEYS.meetingContext, JSON.stringify(meetingTranscript.slice(-20)));
 }
 
+function clearStoredSessionData() {
+  localStorage.removeItem(STORAGE_KEYS.messages);
+  localStorage.removeItem(STORAGE_KEYS.history);
+  localStorage.removeItem(STORAGE_KEYS.meetingContext);
+  localStorage.removeItem(STORAGE_KEYS.documents);
+  localStorage.removeItem("orbynecue.knowledge");
+}
+
 function addHistory(question, source) {
   history = [{ question, source, at: new Date().toLocaleTimeString() }, ...history].slice(0, 20);
   localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(history));
@@ -757,35 +765,34 @@ async function checkBackend() {
   }
 }
 
-function clearChat() {
+function clearChat({ clearDocuments = false } = {}) {
   messages = [];
   history = [];
   meetingTranscript = [];
   localStorage.removeItem(STORAGE_KEYS.messages);
   localStorage.removeItem(STORAGE_KEYS.history);
   localStorage.removeItem(STORAGE_KEYS.meetingContext);
+
+  if (clearDocuments) {
+    documents = [];
+    localStorage.removeItem(STORAGE_KEYS.documents);
+    localStorage.removeItem("orbynecue.knowledge");
+    elements.knowledgeFile.value = "";
+    elements.composerFile.value = "";
+    renderDocuments();
+  }
+
   renderMessages();
   renderHistory();
   updateContextIndicator();
 }
 
 function loadState() {
-  documents = JSON.parse(localStorage.getItem(STORAGE_KEYS.documents) || "[]");
-  history = JSON.parse(localStorage.getItem(STORAGE_KEYS.history) || "[]");
-  messages = JSON.parse(localStorage.getItem(STORAGE_KEYS.messages) || "[]");
-  meetingTranscript = JSON.parse(localStorage.getItem(STORAGE_KEYS.meetingContext) || "[]");
-
-  const legacyKnowledge = JSON.parse(localStorage.getItem("orbynecue.knowledge") || "[]");
-  if (!documents.length && Array.isArray(legacyKnowledge) && legacyKnowledge.length) {
-    documents = [{
-      id: "legacy-knowledge",
-      name: "Uploaded Knowledge",
-      status: "Loaded",
-      chunkCount: legacyKnowledge.length,
-      chunks: legacyKnowledge
-    }];
-    saveDocuments();
-  }
+  clearStoredSessionData();
+  documents = [];
+  history = [];
+  messages = [];
+  meetingTranscript = [];
 
   renderDocuments();
   renderHistory();
@@ -877,7 +884,7 @@ elements.clearHistory.addEventListener("click", () => {
 });
 
 elements.newChat.addEventListener("click", () => {
-  clearChat();
+  clearChat({ clearDocuments: true });
 });
 
 elements.settingsButton.addEventListener("click", () => {
