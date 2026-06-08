@@ -114,6 +114,17 @@ def format_document_points(lines):
     return "\n".join(formatted)
 
 
+def is_question_line(line: str):
+    clean_line = line.strip()
+    return bool(re.match(r"^q(uestion)?\s*\d*[:.)-]?\s+", clean_line, re.IGNORECASE)) or (
+        clean_line.endswith("?") and len(tokenize(clean_line)) <= 24
+    )
+
+
+def strip_answer_label(line: str):
+    return re.sub(r"^(a(nswer)?|response)\s*\d*[:.)-]?\s*", "", line, flags=re.IGNORECASE).strip()
+
+
 def extract_answer_section(question: str, chunk: str):
     lines = [line.strip() for line in chunk.splitlines() if line.strip()]
     if not lines:
@@ -129,18 +140,22 @@ def extract_answer_section(question: str, chunk: str):
             best_score = score
             best_index = index
 
-    collected = [lines[best_index]]
-    for line in lines[best_index + 1:]:
-        lower_line = line.lower()
-        if re.match(r"^q(uestion)?\s*\d*[:.)-]?\s+", line, re.IGNORECASE):
+    start_index = best_index + 1 if is_question_line(lines[best_index]) else best_index
+    collected = []
+
+    for raw_line in lines[start_index:]:
+        if collected and is_question_line(raw_line):
             break
-        if lower_line.endswith("?") and len(tokenize(line)) <= 14:
-            break
+
+        line = strip_answer_label(raw_line)
+        if not line:
+            continue
+
         collected.append(line)
         if len(" ".join(collected).split()) >= MAX_LOCAL_ANSWER_WORDS:
             break
 
-    return compact_text(format_document_points(collected))
+    return compact_text(format_document_points(collected or [lines[best_index]]))
 
 
 def local_answer_from_context(question: str, scored_chunks):

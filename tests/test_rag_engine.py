@@ -63,9 +63,38 @@ def test_local_fallback_returns_complete_section_after_matching_question(monkeyp
     answer, confidence = rag_engine.answer_from_document("tell me about yourself")
 
     assert confidence > 40
-    assert "Tell me about yourself" in answer
+    assert "Tell me about yourself" not in answer
     assert "learning and development professional" in answer
     assert "Why are you a good fit" not in answer
+
+
+def test_local_fallback_skips_matched_numbered_question(monkeypatch):
+    monkeypatch.setattr(
+        rag_engine,
+        "DOCUMENT_CHUNKS",
+        [
+            "\n".join(
+                [
+                    "2. How do you convert SME content into learner friendly training?",
+                    "I convert SME content into learner friendly training by:",
+                    "1. Breaking complex ideas into simple language.",
+                    "2. Organizing the content into clear learning steps.",
+                    "3. Adding practical examples and checks for understanding.",
+                    "3. How do you handle stakeholder feedback?",
+                    "I clarify priorities and revise the content.",
+                ]
+            )
+        ],
+    )
+    monkeypatch.setattr(rag_engine, "DOCUMENT_EMBEDDINGS", [])
+
+    answer, confidence = rag_engine.answer_from_document("How do you convert SME content into friendly?")
+
+    assert confidence > 40
+    assert "convert SME content into learner friendly training?" not in answer
+    assert "Breaking complex ideas into simple language" in answer
+    assert "Organizing the content into clear learning steps" in answer
+    assert "handle stakeholder feedback" not in answer
 
 
 def test_local_fallback_requires_more_than_40_percent_match(monkeypatch):

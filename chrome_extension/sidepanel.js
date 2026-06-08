@@ -95,6 +95,16 @@ function sentenceMatches(question, chunk) {
     .map((item) => item.sentence);
 }
 
+function isQuestionLine(line) {
+  const cleanLine = line.trim();
+  return /^q(uestion)?\s*\d*[:.)-]?\s+/i.test(cleanLine)
+    || (cleanLine.endsWith("?") && tokenize(cleanLine).length <= 24);
+}
+
+function stripAnswerLabel(line) {
+  return line.replace(/^(a(nswer)?|response)\s*\d*[:.)-]?\s*/i, "").trim();
+}
+
 function extractPointwiseAnswer(question, chunk) {
   const lines = chunk
     .split(/\n+/)
@@ -112,11 +122,19 @@ function extractPointwiseAnswer(question, chunk) {
     }
   });
 
-  const collected = [lines[bestIndex] || chunk.slice(0, 240)];
-  for (const line of lines.slice(bestIndex + 1)) {
-    if (/^q(uestion)?\s*\d*[:.)-]?\s+/i.test(line) || (line.endsWith("?") && tokenize(line).length <= 14)) {
+  const startIndex = isQuestionLine(lines[bestIndex] || "") ? bestIndex + 1 : bestIndex;
+  const collected = [];
+
+  for (const rawLine of lines.slice(startIndex)) {
+    if (collected.length && isQuestionLine(rawLine)) {
       break;
     }
+
+    const line = stripAnswerLabel(rawLine);
+    if (!line) {
+      continue;
+    }
+
     collected.push(line);
     if (collected.join(" ").split(/\s+/).length >= 180) {
       break;
@@ -124,7 +142,9 @@ function extractPointwiseAnswer(question, chunk) {
   }
 
   const pointPrefix = new RegExp("^\\s*(?:[-*\\u2022]|\\d+[.)]|[a-zA-Z][.)])\\s+");
-  return collected.map((line) => line.replace(pointPrefix, "").trim()).filter(Boolean);
+  return (collected.length ? collected : [lines[bestIndex] || chunk.slice(0, 240)])
+    .map((line) => line.replace(pointPrefix, "").trim())
+    .filter(Boolean);
 }
 
 function renderAnswer(question) {

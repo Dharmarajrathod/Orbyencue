@@ -162,6 +162,16 @@ function formatDocumentPoints(lines) {
     .join("\n");
 }
 
+function isQuestionLine(line) {
+  const cleanLine = line.trim();
+  return /^q(uestion)?\s*\d*[:.)-]?\s+/i.test(cleanLine)
+    || (cleanLine.endsWith("?") && tokenize(cleanLine).length <= 24);
+}
+
+function stripAnswerLabel(line) {
+  return line.replace(/^(a(nswer)?|response)\s*\d*[:.)-]?\s*/i, "").trim();
+}
+
 function scoreChunk(questionWords, chunk) {
   const chunkWords = new Set(tokenize(chunk));
   let hits = 0;
@@ -207,22 +217,26 @@ function extractAnswerSection(question, chunk) {
     }
   });
 
-  const collected = [lines[bestIndex]];
-  for (const line of lines.slice(bestIndex + 1)) {
-    const lowerLine = line.toLowerCase();
-    if (/^q(uestion)?\s*\d*[:.)-]?\s+/i.test(line)) {
+  const startIndex = isQuestionLine(lines[bestIndex]) ? bestIndex + 1 : bestIndex;
+  const collected = [];
+
+  for (const rawLine of lines.slice(startIndex)) {
+    if (collected.length && isQuestionLine(rawLine)) {
       break;
     }
-    if (lowerLine.endsWith("?") && tokenize(line).length <= 14) {
-      break;
+
+    const line = stripAnswerLabel(rawLine);
+    if (!line) {
+      continue;
     }
+
     collected.push(line);
     if (collected.join(" ").split(/\s+/).length >= MAX_LOCAL_ANSWER_WORDS) {
       break;
     }
   }
 
-  return compactText(formatDocumentPoints(collected));
+  return compactText(formatDocumentPoints(collected.length ? collected : [lines[bestIndex]]));
 }
 
 function localAnswer(question, scoredChunks) {
@@ -250,23 +264,9 @@ function formatAnswer(answer) {
     return `<p>${escapeHtml(answer)}</p>`;
   }
 
-  const items = [];
-  let current = null;
-
-  for (const line of lines.slice(firstNumberedIndex)) {
-    if (/^\d+\.\s+/.test(line)) {
-      if (current) {
-        items.push(current);
-      }
-      current = [line.replace(/^\d+\.\s+/, "")];
-    } else if (current) {
-      current.push(line);
-    }
-  }
-
-  if (current) {
-    items.push(current);
-  }
+  const items = [lines
+    .slice(firstNumberedIndex)
+    .map((line, index) => (index === 0 ? line.replace(/^\d+\.\s+/, "") : line))];
 
   return `<ol>${items
     .map((itemLines) => `<li>${itemLines
