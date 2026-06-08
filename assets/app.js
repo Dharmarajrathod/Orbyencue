@@ -249,6 +249,10 @@ function localAnswer(question, scoredChunks) {
   return `1. **Complete Answer**:\n${section}`;
 }
 
+function hasDocumentAnswer(matches) {
+  return matches.length && documents.some((doc) => doc.status === "Loaded" && (doc.chunks || []).length);
+}
+
 function formatAnswer(answer) {
   const lines = answer
     .split(/\n+/)
@@ -455,6 +459,13 @@ async function answerQuestion(question, options = {}) {
     updateMessage(assistantMessageId, result.answer, contextLabel());
     addHistory(trimmed, result.model);
   } catch (error) {
+    if (hasDocumentAnswer(matches)) {
+      const answer = localAnswer(trimmed, matches);
+      updateMessage(assistantMessageId, answer, `Documents only | Gemini unavailable | Match: ${confidence}%`);
+      addHistory(trimmed, `Document fallback ${confidence}%`);
+      return;
+    }
+
     updateMessage(assistantMessageId, `Error: ${error.message}`, "Error");
     addHistory(trimmed, "Error");
   } finally {

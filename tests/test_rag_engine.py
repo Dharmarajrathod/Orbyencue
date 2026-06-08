@@ -111,6 +111,20 @@ def test_local_fallback_requires_more_than_40_percent_match(monkeypatch):
     assert answer is None
 
 
+def test_best_document_answer_allows_low_confidence_when_ai_is_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        rag_engine,
+        "DOCUMENT_CHUNKS",
+        ["Interview answer bank: keep answers concise, practical, and grounded in the uploaded document."],
+    )
+    monkeypatch.setattr(rag_engine, "DOCUMENT_EMBEDDINGS", [])
+
+    answer, confidence = rag_engine.answer_from_best_document("unrelated wording")
+
+    assert confidence == 0.0
+    assert "Interview answer bank" in answer
+
+
 def test_local_fallback_returns_only_one_document_answer(monkeypatch):
     monkeypatch.setattr(
         rag_engine,

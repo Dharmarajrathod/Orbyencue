@@ -10,7 +10,7 @@ from PIL import Image, ImageTk
 import re
 
 from license import is_license_valid, load_license, save_license, verify_with_backend
-from rag_engine import answer_from_document, answer_from_gemini
+from rag_engine import answer_from_best_document, answer_from_document, answer_from_gemini
 from listener import SystemAudioListener
 from file_processor import process_file
 from streaming_transcriber import StreamingTranscriber
@@ -287,6 +287,31 @@ class InterviewHelperGUI:
         self.text.insert(tk.END, f"Listening: {text}\n", "live")
         self.text.see(tk.END)
 
+    def _insert_answer_text(self, answer: str):
+        blocks = answer.split("\n\n")
+
+        for block in blocks:
+            lines = [line.strip() for line in block.splitlines() if line.strip()]
+            if not lines:
+                continue
+
+            line = lines[0]
+            match = re.match(r"(\d+\.\s*)\*\*(.+?)\*\*(.*)", line)
+
+            if match:
+                number = match.group(1)
+                heading = match.group(2)
+                rest = match.group(3)
+
+                self.text.insert(tk.END, number, "body")
+                self.text.insert(tk.END, heading, "heading")
+                self.text.insert(tk.END, rest + "\n", "body")
+            else:
+                self.text.insert(tk.END, line + "\n", "body")
+
+            for extra_line in lines[1:]:
+                self.text.insert(tk.END, extra_line + "\n", "body")
+
     def _handle_text(self, text: str):
         self._clear_live_text()
         self.speech_buffer.append(text)
@@ -315,29 +340,7 @@ class InterviewHelperGUI:
                 "status"
             )
 
-            blocks = answer.split("\n\n")
-
-            for block in blocks:
-                lines = [line.strip() for line in block.splitlines() if line.strip()]
-                if not lines:
-                    continue
-
-                line = lines[0]
-
-                # Match: 1. **Heading**: explanation
-                match = re.match(r"(\d+\.\s*)\*\*(.+?)\*\*(.*)", line)
-
-                if match:
-                    number = match.group(1)      # "1. "
-                    heading = match.group(2)     # "Job Replacement Fear"
-                    rest = match.group(3)        # ": explanation text"
-
-                    self.text.insert(tk.END, number, "body")
-                    self.text.insert(tk.END, heading, "heading")
-                    self.text.insert(tk.END, rest + "\n", "body")
-                else:
-                    self.text.insert(tk.END, line + "\n", "body")
-
+            self._insert_answer_text(answer)
             self.text.see(tk.END)
 
         # ================= GEMINI FALLBACK =================
@@ -345,11 +348,24 @@ class InterviewHelperGUI:
             try:
                 fallback = answer_from_gemini(combined_text)
             except Exception as e:
+                fallback, fallback_confidence = answer_from_best_document(combined_text)
+                if not fallback:
+                    self.text.insert(
+                        tk.END,
+                        f"❌ Gemini error: {e}\n",
+                        "error"
+                    )
+                    self.text.see(tk.END)
+                    self.log("─" * 60, "status")
+                    return
+
                 self.text.insert(
                     tk.END,
-                    f"❌ Gemini error: {e}\n",
-                    "error"
+                    f"💡 Answer (Document Only | Gemini unavailable | Match: {fallback_confidence}%):\n",
+                    "status"
                 )
+
+                self._insert_answer_text(fallback)
                 self.text.see(tk.END)
                 self.log("─" * 60, "status")
                 return
@@ -367,29 +383,7 @@ class InterviewHelperGUI:
                     "status"
                 )
 
-                blocks = fallback.split("\n\n")
-
-                for block in blocks:
-                    lines = [line.strip() for line in block.splitlines() if line.strip()]
-                    if not lines:
-                        continue
-
-                    line = lines[0]
-
-                    # SAME parsing logic as document answers
-                    match = re.match(r"(\d+\.\s*)\*\*(.+?)\*\*(.*)", line)
-
-                    if match:
-                        number = match.group(1)   # "1. "
-                        heading = match.group(2)  # Heading text
-                        rest = match.group(3)     # ": explanation..."
-
-                        self.text.insert(tk.END, number, "body")
-                        self.text.insert(tk.END, heading, "heading")
-                        self.text.insert(tk.END, rest + "\n", "body")
-                    else:
-                        self.text.insert(tk.END, line + "\n", "body")
-
+                self._insert_answer_text(fallback)
 
             self.text.see(tk.END)
 

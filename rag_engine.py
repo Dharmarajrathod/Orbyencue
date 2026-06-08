@@ -167,7 +167,7 @@ def local_answer_from_context(question: str, scored_chunks):
     return f"1. **Complete Answer**:\n{section}"
 
 
-def answer_from_local_document(question: str):
+def answer_from_local_document(question: str, allow_low_confidence=False):
     scores = [(lexical_similarity(question, chunk), chunk) for chunk in DOCUMENT_CHUNKS]
     scores.sort(reverse=True, key=lambda item: item[0])
 
@@ -175,10 +175,14 @@ def answer_from_local_document(question: str):
         return None, 0.0
 
     confidence = round(scores[0][0] * 100, 2)
-    if confidence <= DOCUMENT_MATCH_THRESHOLD:
+    if not allow_low_confidence and confidence <= DOCUMENT_MATCH_THRESHOLD:
         return None, confidence
 
     return local_answer_from_context(question, scores), confidence
+
+
+def answer_from_best_document(question: str):
+    return answer_from_local_document(question, allow_low_confidence=True)
 
 
 def answer_from_document(question: str):
