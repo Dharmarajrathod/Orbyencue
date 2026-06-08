@@ -20,6 +20,7 @@ gemini_client = None
 TOP_K = 4
 DOCUMENT_MATCH_THRESHOLD = 40.0
 MAX_LOCAL_ANSWER_WORDS = 180
+DOCUMENT_POINT_PREFIX = "^(\\s*(?:[-*\\u2022]|\\d+[.)]|[a-zA-Z][.)])\\s+)"
 DEFAULT_GEMINI_MODELS = [
     "gemini-2.5-flash-lite",
     "gemini-2.5-flash",
@@ -96,8 +97,21 @@ def sentence_matches(question: str, context: str, limit=3):
 def compact_text(text: str, max_words=MAX_LOCAL_ANSWER_WORDS):
     words = text.split()
     if len(words) <= max_words:
-        return " ".join(words)
+        return text.strip()
     return " ".join(words[:max_words]).rstrip(" .,;:") + "..."
+
+
+def format_document_points(lines):
+    formatted = []
+    for line in lines:
+        clean_line = line.strip()
+        if not clean_line:
+            continue
+        if re.match(DOCUMENT_POINT_PREFIX, clean_line):
+            formatted.append(clean_line)
+        else:
+            formatted.append(f"- {clean_line}")
+    return "\n".join(formatted)
 
 
 def extract_answer_section(question: str, chunk: str):
@@ -118,7 +132,7 @@ def extract_answer_section(question: str, chunk: str):
     collected = [lines[best_index]]
     for line in lines[best_index + 1:]:
         lower_line = line.lower()
-        if re.match(r"^(q(uestion)?\s*\d*[:.)-]?|[0-9]+\.)\s+", line, re.IGNORECASE):
+        if re.match(r"^q(uestion)?\s*\d*[:.)-]?\s+", line, re.IGNORECASE):
             break
         if lower_line.endswith("?") and len(tokenize(line)) <= 14:
             break
@@ -126,7 +140,7 @@ def extract_answer_section(question: str, chunk: str):
         if len(" ".join(collected).split()) >= MAX_LOCAL_ANSWER_WORDS:
             break
 
-    return compact_text(" ".join(collected))
+    return compact_text(format_document_points(collected))
 
 
 def local_answer_from_context(question: str, scored_chunks):
@@ -135,7 +149,7 @@ def local_answer_from_context(question: str, scored_chunks):
 
     _, chunk = scored_chunks[0]
     section = extract_answer_section(question, chunk)
-    return f"1. **Complete Answer**: {section}"
+    return f"1. **Complete Answer**:\n{section}"
 
 
 def answer_from_local_document(question: str):
@@ -192,11 +206,13 @@ STRICT OUTPUT RULES (MANDATORY):
 - The answer MUST contain exactly one numbered item.
 - The answer MUST follow this exact format:
 
-1. **Complete Answer**: one concise, factual answer from the context.
+1. **Complete Answer**:
+- point-wise answer copied or closely preserved from the best matching context.
 
 - The heading MUST be bold.
-- Do NOT use bullet points.
-- Do NOT write paragraphs.
+- Keep the document's point-wise wording and ordering when the context has bullets or numbered points.
+- Do NOT create a second numbered answer item.
+- Do NOT write paragraphs when the context has point-wise lines.
 - Do NOT add extra text before or after the list.
 - Do NOT repeat the answers.
 - Do NOT add conclusions or summaries.

@@ -62,6 +62,7 @@ class InterviewHelperGUI:
         self.speech_buffer = []
         self.last_speech_time = 0
         self.last_live_text = ""
+        self.silence_finalize_seconds = 0.45
         self.selected_language = tk.StringVar(value="English")
 
         # ================= ROOT =================
@@ -290,10 +291,10 @@ class InterviewHelperGUI:
         self._clear_live_text()
         self.speech_buffer.append(text)
         self.last_speech_time = time.time()
-        self.root.after(1200, self._finalize_if_silent)
+        self.root.after(int(self.silence_finalize_seconds * 1000), self._finalize_if_silent)
 
     def _finalize_if_silent(self):
-        if time.time() - self.last_speech_time < 1.2:
+        if time.time() - self.last_speech_time < self.silence_finalize_seconds:
             return
         if not self.speech_buffer:
             return

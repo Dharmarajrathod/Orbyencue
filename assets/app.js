@@ -38,9 +38,9 @@ const DEFAULT_LOCAL_BACKEND_URL = "http://127.0.0.1:8000";
 const DOCUMENT_MATCH_THRESHOLD = 40;
 const MAX_LOCAL_ANSWER_WORDS = 180;
 const MAX_CONTEXT_WORDS = 520;
-const MEETING_AUDIO_SEGMENT_MS = 20000;
-const MEETING_AUTO_ANSWER_COOLDOWN_MS = 30000;
-const MIN_MEETING_AUTO_ANSWER_WORDS = 4;
+const MEETING_AUDIO_SEGMENT_MS = 5000;
+const MEETING_AUTO_ANSWER_COOLDOWN_MS = 6000;
+const MIN_MEETING_AUTO_ANSWER_WORDS = 3;
 
 let audioOnlyStream = null;
 let documents = [];
@@ -145,9 +145,21 @@ function tokenize(text) {
 function compactText(text, maxWords = MAX_LOCAL_ANSWER_WORDS) {
   const words = text.split(/\s+/).filter(Boolean);
   if (words.length <= maxWords) {
-    return words.join(" ");
+    return text.trim();
   }
   return `${words.slice(0, maxWords).join(" ").replace(/[.,;:\s]+$/, "")}...`;
+}
+
+function isDocumentPoint(line) {
+  return new RegExp("^\\s*(?:[-*\\u2022]|\\d+[.)]|[a-zA-Z][.)])\\s+").test(line);
+}
+
+function formatDocumentPoints(lines) {
+  return lines
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => (isDocumentPoint(line) ? line : `- ${line}`))
+    .join("\n");
 }
 
 function scoreChunk(questionWords, chunk) {
@@ -198,7 +210,7 @@ function extractAnswerSection(question, chunk) {
   const collected = [lines[bestIndex]];
   for (const line of lines.slice(bestIndex + 1)) {
     const lowerLine = line.toLowerCase();
-    if (/^(q(uestion)?\s*\d*[:.)-]?|[0-9]+\.)\s+/i.test(line)) {
+    if (/^q(uestion)?\s*\d*[:.)-]?\s+/i.test(line)) {
       break;
     }
     if (lowerLine.endsWith("?") && tokenize(line).length <= 14) {
@@ -210,7 +222,7 @@ function extractAnswerSection(question, chunk) {
     }
   }
 
-  return compactText(collected.join(" "));
+  return compactText(formatDocumentPoints(collected));
 }
 
 function localAnswer(question, scoredChunks) {
@@ -220,8 +232,7 @@ function localAnswer(question, scoredChunks) {
   }
 
   const section = extractAnswerSection(question, bestMatch.chunk);
-  const source = bestMatch.filename ? `${bestMatch.filename}: ` : "";
-  return `1. **Document Match**: ${source}${section}`;
+  return `1. **Complete Answer**:\n${section}`;
 }
 
 function formatAnswer(answer) {
@@ -234,14 +245,33 @@ function formatAnswer(answer) {
     return "";
   }
 
-  const numbered = lines.every((line) => /^\d+\.\s+/.test(line));
-  if (!numbered) {
+  const firstNumberedIndex = lines.findIndex((line) => /^\d+\.\s+/.test(line));
+  if (firstNumberedIndex === -1) {
     return `<p>${escapeHtml(answer)}</p>`;
   }
 
-  return `<ol>${lines
-    .map((line) => line.replace(/^\d+\.\s+/, ""))
-    .map((line) => `<li>${escapeHtml(line).replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")}</li>`)
+  const items = [];
+  let current = null;
+
+  for (const line of lines.slice(firstNumberedIndex)) {
+    if (/^\d+\.\s+/.test(line)) {
+      if (current) {
+        items.push(current);
+      }
+      current = [line.replace(/^\d+\.\s+/, "")];
+    } else if (current) {
+      current.push(line);
+    }
+  }
+
+  if (current) {
+    items.push(current);
+  }
+
+  return `<ol>${items
+    .map((itemLines) => `<li>${itemLines
+      .map((line) => escapeHtml(line).replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>"))
+      .join("<br>")}</li>`)
     .join("")}</ol>`;
 }
 
@@ -386,7 +416,7 @@ function buildContextualQuestion(question, matches) {
     return question;
   }
 
-  return `${contextParts.join("\n\n")}\n\nUser question:\n${question}\n\nAnswer using the meeting audio context, uploaded document context, or both when relevant.`;
+  return `${contextParts.join("\n\n")}\n\nUser question:\n${question}\n\nWhen uploaded document context is relevant, return only one answer from the best matching document section and keep it point-wise as written in the document. Otherwise answer using the meeting audio context.`;
 }
 
 async function answerQuestion(question, options = {}) {
@@ -406,7 +436,7 @@ async function answerQuestion(question, options = {}) {
   const confidence = matches.length ? Math.round(matches[0].score * 10000) / 100 : 0;
 
   try {
-    if (matches.length && confidence > DOCUMENT_MATCH_THRESHOLD && !meetingTranscript.length) {
+    if (matches.length && confidence > DOCUMENT_MATCH_THRESHOLD) {
       const answer = localAnswer(trimmed, matches);
       updateMessage(assistantMessageId, answer, `Documents | Match: ${confidence}%`);
       addHistory(trimmed, `Document match ${confidence}%`);

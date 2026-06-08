@@ -261,18 +261,18 @@ def build_prompt(question: str) -> str:
 You are an interview assistant.
 
 STRICT OUTPUT RULES (MANDATORY):
-- The answer MUST be a numbered list.
-- Each point MUST follow this EXACT format:
+- The answer MUST contain exactly one numbered item.
+- Keep the content point-wise inside that one item.
+- Follow this EXACT format:
 
-1. **2-3 word heading**: explanation in 1-2 concise sentences.
-2. **2-3 word heading**: explanation in 1-2 concise sentences.
-3. **2-3 word heading**: explanation in 1-2 concise sentences.
+1. **Complete Answer**:
+- first concise point
+- second concise point
 
 IMPORTANT:
 - Headings MUST be wrapped in ** ** (markdown bold).
-- Keep the heading and explanation on the SAME LINE.
-- Do NOT add blank lines between points.
-- Do NOT use bullet points.
+- Do NOT add a second numbered item.
+- Use document or meeting context when it is supplied in the question.
 - Do NOT add extra text before or after the list.
 
 Question:
