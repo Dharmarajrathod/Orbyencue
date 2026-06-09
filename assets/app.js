@@ -344,6 +344,20 @@ function addMessage(role, content, meta = contextLabel()) {
   return message.id;
 }
 
+function startCurrentQuestion(question, meta = contextLabel()) {
+  messages = [];
+  saveMessages();
+  addMessage("user", question, meta);
+  const assistantMessageId = addMessage("assistant", "Thinking...", "Processing");
+  return { assistantMessageId };
+}
+
+function startCurrentAnswer(content, meta = contextLabel()) {
+  messages = [];
+  saveMessages();
+  return addMessage("assistant", content, meta);
+}
+
 function updateMessage(id, content, meta) {
   messages = messages.map((message) => (message.id === id ? { ...message, content, meta: meta || message.meta } : message));
   saveMessages();
@@ -449,11 +463,9 @@ async function answerQuestion(question, options = {}) {
     return;
   }
 
-  if (!options.silentUserMessage) {
-    addMessage("user", trimmed, contextLabel());
-  }
-
-  const assistantMessageId = addMessage("assistant", "Thinking...", options.meta || "Processing");
+  const assistantMessageId = options.silentUserMessage
+    ? startCurrentAnswer("Thinking...", options.meta || "Processing")
+    : startCurrentQuestion(trimmed, contextLabel()).assistantMessageId;
   setProcessing(true);
 
   const matches = getBestChunks(trimmed);
@@ -642,7 +654,7 @@ async function sendMeetingAudioChunk(blob) {
       }
     }
   } catch (error) {
-    addMessage("assistant", `Meeting audio error: ${error.message}`, "Error");
+    startCurrentAnswer(`Meeting audio error: ${error.message}`, "Error");
     if (error.status === 429) {
       stopMeetingAudioSession();
       setMeetingAudioStatus("Quota exhausted");
@@ -855,7 +867,7 @@ async function generateMeetingAnalysis() {
 
   const transcript = compactTranscriptForAnalysis(meetingTranscript.join(" "));
   if (!transcript) {
-    addMessage("assistant", "I could not detect enough clear speech to analyze this recording.", "Meeting analysis");
+    startCurrentAnswer("I could not detect enough clear speech to analyze this recording.", "Meeting analysis");
     return;
   }
 
@@ -1043,7 +1055,7 @@ elements.startMeetingAudio.addEventListener("click", async () => {
     setProcessing(true);
     await shareMeetingAudio();
   } catch (error) {
-    addMessage("assistant", error.message, "Audio sharing");
+    startCurrentAnswer(error.message, "Audio sharing");
     setMeetingAudioStatus("Error");
   } finally {
     setProcessing(false);
@@ -1068,7 +1080,7 @@ elements.startRecording.addEventListener("click", async () => {
     await startRecordingSession();
   } catch (error) {
     meetingRecording = false;
-    addMessage("assistant", error.message, "Recording");
+    startCurrentAnswer(error.message, "Recording");
     setMeetingAudioStatus("Error");
     updateAudioStatus();
   } finally {
@@ -1094,7 +1106,7 @@ elements.newChat.addEventListener("click", () => {
 });
 
 elements.settingsButton.addEventListener("click", () => {
-  addMessage("assistant", "Settings are managed through backend environment variables for this build.", "Settings");
+  startCurrentAnswer("Settings are managed through backend environment variables for this build.", "Settings");
 });
 
 elements.historyList.addEventListener("click", (event) => {
