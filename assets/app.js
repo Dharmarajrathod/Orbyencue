@@ -14,6 +14,7 @@ const elements = {
   historyList: document.querySelector("#historyList"),
   knowledgeFile: document.querySelector("#knowledgeFile"),
   knowledgeStatus: document.querySelector("#knowledgeStatus"),
+  liveTranscript: document.querySelector("#liveTranscript"),
   manualQuestion: document.querySelector("#manualQuestion"),
   meetingAudioLevel: document.querySelector("#meetingAudioLevel"),
   meetingAudioStatus: document.querySelector("#meetingAudioStatus"),
@@ -41,7 +42,7 @@ const DEFAULT_LOCAL_BACKEND_URL = "http://127.0.0.1:8000";
 const DOCUMENT_MATCH_THRESHOLD = 40;
 const MAX_LOCAL_ANSWER_WORDS = 180;
 const MAX_CONTEXT_WORDS = 520;
-const MEETING_AUDIO_SEGMENT_MS = 5000;
+const MEETING_AUDIO_SEGMENT_MS = 2000;
 const MEETING_AUTO_ANSWER_COOLDOWN_MS = 6000;
 const MEETING_QUESTION_SETTLE_MS = 4500;
 const MIN_MEETING_AUTO_ANSWER_WORDS = 8;
@@ -57,6 +58,7 @@ let meetingAudioContext = null;
 let meetingAudioLevelTimer = null;
 let meetingAudioRecorder = null;
 let meetingAudioShared = false;
+let meetingSharedAudioStream = null;
 let meetingAudioStream = null;
 let meetingMixerContext = null;
 let meetingMicStream = null;
@@ -66,6 +68,7 @@ let processingCount = 0;
 let meetingListening = false;
 let meetingRecording = false;
 let meetingTranscript = [];
+let resumeListeningAfterRecording = false;
 
 function getApiBaseUrl() {
   const configured = localStorage.getItem(STORAGE_KEYS.apiBaseUrl) || window.ORBYNE_API_BASE_URL || "";
@@ -135,6 +138,13 @@ function setMeetingAudioStatus(text) {
 function setMeetingAudioLevel(value) {
   const bounded = Math.max(0, Math.min(value, 1));
   elements.meetingAudioLevel.style.transform = `scaleX(${bounded})`;
+}
+
+function showLiveTranscript(text) {
+  if (!elements.liveTranscript) {
+    return;
+  }
+  elements.liveTranscript.textContent = text ? `Shared audio: ${text}` : "";
 }
 
 function escapeHtml(value) {
@@ -646,6 +656,9 @@ async function sendMeetingAudioChunk(blob) {
 
     const transcript = (payload.transcript || "").trim();
     if (transcript) {
+      if (!meetingRecording) {
+        showLiveTranscript(transcript);
+      }
       meetingTranscript.push(transcript);
       meetingTranscript = meetingTranscript.slice(-20);
       saveMeetingContext();
@@ -777,6 +790,25 @@ async function shareMeetingAudio() {
     throw new Error("No shared audio found. Choose a tab or screen with audio sharing enabled.");
   }
 
+  meetingSharedAudioStream = new MediaStream(audioTracks);
+  audioOnlyStream = meetingSharedAudioStream;
+
+  for (const track of meetingAudioStream.getTracks()) {
+    track.addEventListener("ended", stopMeetingAudioSession);
+  }
+
+  meetingAudioShared = true;
+  startMeetingAudioMeter(audioOnlyStream);
+  setMeetingAudioStatus("Audio shared");
+  updateAudioStatus();
+  updateContextIndicator();
+}
+
+async function prepareRecordingAudioStream() {
+  if (!meetingSharedAudioStream) {
+    throw new Error("Share meeting audio first.");
+  }
+
   meetingMicStream = await navigator.mediaDevices.getUserMedia({
     audio: {
       autoGainControl: true,
@@ -788,22 +820,26 @@ async function shareMeetingAudio() {
   const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
   meetingMixerContext = new AudioContextConstructor();
   const destination = meetingMixerContext.createMediaStreamDestination();
-  meetingMixerContext.createMediaStreamSource(new MediaStream(audioTracks)).connect(destination);
+  meetingMixerContext.createMediaStreamSource(meetingSharedAudioStream).connect(destination);
   meetingMixerContext.createMediaStreamSource(meetingMicStream).connect(destination);
   audioOnlyStream = destination.stream;
 
-  for (const track of meetingAudioStream.getTracks()) {
-    track.addEventListener("ended", stopMeetingAudioSession);
-  }
-  for (const track of meetingMicStream.getTracks()) {
-    track.addEventListener("ended", stopMeetingAudioSession);
-  }
-
-  meetingAudioShared = true;
   startMeetingAudioMeter(audioOnlyStream);
-  setMeetingAudioStatus("Meeting and microphone audio ready");
-  updateAudioStatus();
-  updateContextIndicator();
+}
+
+function stopRecordingAudioMix() {
+  if (meetingMicStream) {
+    meetingMicStream.getTracks().forEach((track) => track.stop());
+    meetingMicStream = null;
+  }
+  if (meetingMixerContext) {
+    meetingMixerContext.close();
+    meetingMixerContext = null;
+  }
+  if (meetingSharedAudioStream) {
+    audioOnlyStream = meetingSharedAudioStream;
+    startMeetingAudioMeter(audioOnlyStream);
+  }
 }
 
 function startListeningSession() {
@@ -824,8 +860,14 @@ async function startRecordingSession() {
   if (!meetingAudioShared) {
     await shareMeetingAudio();
   }
+  resumeListeningAfterRecording = meetingListening;
+  if (meetingListening) {
+    await stopListeningSession({ keepStatus: true });
+  }
+  await prepareRecordingAudioStream();
   meetingRecording = true;
   meetingTranscript = [];
+  showLiveTranscript("");
   saveMeetingContext();
   cancelScheduledMeetingAnswer();
   pendingMeetingAnswerText = "";
@@ -903,7 +945,14 @@ async function stopRecordingSession() {
   const recorderStopped = stopListeningSession({ keepStatus: true });
   await recorderStopped;
   await generateMeetingAnalysis();
-  setMeetingAudioStatus(meetingAudioShared ? "Audio shared" : "Not shared");
+  stopRecordingAudioMix();
+  if (resumeListeningAfterRecording && meetingSharedAudioStream) {
+    resumeListeningAfterRecording = false;
+    startListeningSession();
+  } else {
+    resumeListeningAfterRecording = false;
+    setMeetingAudioStatus(meetingAudioShared ? "Audio shared" : "Not shared");
+  }
   updateAudioStatus();
   updateContextIndicator();
 }
@@ -912,6 +961,7 @@ async function stopMeetingAudioSession({ analyze = false } = {}) {
   if (meetingRecording) {
     meetingRecording = false;
   }
+  resumeListeningAfterRecording = false;
   const recorderStopped = stopListeningSession({ keepStatus: analyze });
   await recorderStopped;
   if (!analyze) {
@@ -924,6 +974,7 @@ async function stopMeetingAudioSession({ analyze = false } = {}) {
     meetingAudioStream.getTracks().forEach((track) => track.stop());
     meetingAudioStream = null;
   }
+  meetingSharedAudioStream = null;
   if (meetingMicStream) {
     meetingMicStream.getTracks().forEach((track) => track.stop());
     meetingMicStream = null;
@@ -933,6 +984,7 @@ async function stopMeetingAudioSession({ analyze = false } = {}) {
     meetingMixerContext = null;
   }
   audioOnlyStream = null;
+  showLiveTranscript("");
   stopMeetingAudioMeter();
   if (analyze) {
     await generateMeetingAnalysis();

@@ -370,6 +370,21 @@ p {
   transition: transform 160ms ease;
 }
 
+.liveTranscript {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: 13px;
+  min-height: 38px;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.liveTranscript:empty {
+  display: none;
+}
+
 .conversationWrap {
   display: grid;
   gap: 10px;
