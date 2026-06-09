@@ -8,7 +8,7 @@ import json
 from urllib import error, request
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -34,7 +34,7 @@ DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 
 
 class AnswerRequest(BaseModel):
-    question: str = Field(..., min_length=1, max_length=4000)
+    question: str = Field(..., min_length=1, max_length=20000)
 
 
 class AnswerResponse(BaseModel):
@@ -354,7 +354,7 @@ def generate_ollama_answer(question: str):
     return answer, f"ollama/{model}"
 
 
-def transcribe_audio(audio_bytes: bytes, mime_type: str):
+def transcribe_audio(audio_bytes: bytes, mime_type: str, language: str = "auto"):
     if get_ai_provider() == "ollama":
         raise RuntimeError(
             "Meeting audio transcription still needs Gemini or another speech-to-text engine. "
@@ -363,8 +363,12 @@ def transcribe_audio(audio_bytes: bytes, mime_type: str):
 
     errors = []
     quota_retry_after = None
+    language_hint = "Detect and transcribe every spoken language naturally."
+    if language and language != "auto":
+        language_hint = f"The primary spoken language is {language}; still keep any other spoken language if it appears."
     prompt = (
         "Transcribe the spoken words in this audio. "
+        f"{language_hint} "
         "Return only the transcript text. If there is no clear speech, return an empty string."
     )
 
@@ -471,14 +475,14 @@ async def upload_knowledge(file: UploadFile = File(...)):
 
 
 @app.post("/transcribe-audio", response_model=TranscriptResponse)
-async def transcribe_meeting_audio(file: UploadFile = File(...)):
+async def transcribe_meeting_audio(file: UploadFile = File(...), language: str = Form("auto")):
     audio_bytes = await file.read()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Empty audio chunk.")
 
     mime_type = file.content_type or "audio/webm"
     try:
-        transcript, model = transcribe_audio(audio_bytes, mime_type)
+        transcript, model = transcribe_audio(audio_bytes, mime_type, language)
         return TranscriptResponse(transcript=transcript, model=model)
     except GeminiQuotaError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc

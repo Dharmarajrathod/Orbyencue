@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ORBYNECUE</title>
     <link rel="icon" href="icon.png">
-    <link rel="stylesheet" href="assets/styles.css?v=20260608-3">
+    <link rel="stylesheet" href="assets/styles.css?v=20260609-2">
   </head>
   <body>
     <div class="appShell">
@@ -40,6 +40,10 @@
 
       <main class="chatWorkspace" aria-label="ORBYNECUE chat workspace">
         <header class="statusBar" aria-label="Workspace status">
+          <div class="navRecordControls" aria-label="Meeting recording controls">
+            <button id="startRecording" type="button">Start Rec</button>
+            <button id="stopRecording" type="button" class="danger" disabled>Stop Rec</button>
+          </div>
           <span id="connectionStatus" class="statusPill neutral">Checking backend</span>
           <span id="audioSharedStatus" class="statusPill neutral">Audio Not Shared</span>
           <span id="listeningStatus" class="statusPill neutral">Idle</span>
@@ -53,13 +57,27 @@
           <p>Meeting questions, document context, and AI answers from live meeting audio and uploaded knowledge sources.</p>
 
           <div class="audioControls" aria-label="Meeting audio controls">
+            <label class="languageControl" for="audioLanguage">
+              <span>Audio language</span>
+              <select id="audioLanguage">
+                <option value="auto">All languages</option>
+                <option value="en">English</option>
+                <option value="hi">Hindi</option>
+                <option value="es">Spanish</option>
+                <option value="fr">French</option>
+                <option value="de">German</option>
+                <option value="ar">Arabic</option>
+                <option value="zh">Chinese</option>
+                <option value="ja">Japanese</option>
+              </select>
+            </label>
             <div class="shareRow">
-              <button id="startMeetingAudio" type="button">Share Meeting Audio</button>
-              <button id="stopMeetingAudio" type="button" class="secondary" disabled>Stop Sharing</button>
+              <button id="startMeetingAudio" type="button">Share Audio</button>
+              <button id="stopMeetingAudio" type="button" class="secondary" disabled>Stop Audio</button>
             </div>
             <div class="listenRow">
               <button id="startListening" type="button" class="secondary" disabled>Listen</button>
-              <button id="stopListening" type="button" class="danger" disabled>Stop Listening</button>
+              <button id="stopListening" type="button" class="danger" disabled>Stop Listen</button>
             </div>
             <div class="audioStatusLine">
               <span id="meetingAudioStatus">Not shared</span>
@@ -84,6 +102,6 @@
       </main>
     </div>
 
-    <script src="assets/app.js?v=20260608-3"></script>
+    <script src="assets/app.js?v=20260609-2"></script>
   </body>
 </html>

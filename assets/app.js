@@ -1,5 +1,6 @@
 const elements = {
   askQuestion: document.querySelector("#askQuestion"),
+  audioLanguage: document.querySelector("#audioLanguage"),
   audioSharedStatus: document.querySelector("#audioSharedStatus"),
   chatForm: document.querySelector("#chatForm"),
   chatMessages: document.querySelector("#chatMessages"),
@@ -21,8 +22,10 @@ const elements = {
   settingsButton: document.querySelector("#settingsButton"),
   startListening: document.querySelector("#startListening"),
   startMeetingAudio: document.querySelector("#startMeetingAudio"),
+  startRecording: document.querySelector("#startRecording"),
   stopMeetingAudio: document.querySelector("#stopMeetingAudio"),
   stopListening: document.querySelector("#stopListening"),
+  stopRecording: document.querySelector("#stopRecording"),
   listeningStatus: document.querySelector("#listeningStatus")
 };
 
@@ -40,22 +43,28 @@ const MAX_LOCAL_ANSWER_WORDS = 180;
 const MAX_CONTEXT_WORDS = 520;
 const MEETING_AUDIO_SEGMENT_MS = 5000;
 const MEETING_AUTO_ANSWER_COOLDOWN_MS = 6000;
-const MIN_MEETING_AUTO_ANSWER_WORDS = 3;
+const MEETING_QUESTION_SETTLE_MS = 4500;
+const MIN_MEETING_AUTO_ANSWER_WORDS = 8;
 
 let audioOnlyStream = null;
 let documents = [];
 let history = [];
 let lastMeetingAnswerAt = 0;
 let lastMeetingAnswerText = "";
+let pendingMeetingAnswerText = "";
+let pendingMeetingAnswerTimer = null;
 let meetingAudioContext = null;
 let meetingAudioLevelTimer = null;
 let meetingAudioRecorder = null;
 let meetingAudioShared = false;
 let meetingAudioStream = null;
-let meetingAudioUploadActive = false;
+let meetingMixerContext = null;
+let meetingMicStream = null;
+let pendingTranscriptions = new Set();
 let messages = [];
 let processingCount = 0;
 let meetingListening = false;
+let meetingRecording = false;
 let meetingTranscript = [];
 
 function getApiBaseUrl() {
@@ -88,11 +97,14 @@ function setProcessing(active) {
 
 function updateAudioStatus() {
   setStatus(elements.audioSharedStatus, meetingAudioShared ? "Audio Shared" : "Audio Not Shared", meetingAudioShared ? "" : "neutral");
-  setStatus(elements.listeningStatus, meetingListening ? "Listening" : "Idle", meetingListening ? "" : "neutral");
+  setStatus(elements.listeningStatus, meetingRecording ? "Recording" : meetingListening ? "Listening" : "Idle", meetingListening || meetingRecording ? "" : "neutral");
   elements.startMeetingAudio.disabled = meetingAudioShared;
   elements.stopMeetingAudio.disabled = !meetingAudioShared;
   elements.startListening.disabled = !meetingAudioShared || meetingListening;
-  elements.stopListening.disabled = !meetingListening;
+  elements.stopListening.disabled = !meetingListening || meetingRecording;
+  elements.startRecording.disabled = meetingRecording;
+  elements.stopRecording.disabled = !meetingRecording;
+  elements.audioLanguage.disabled = meetingListening || meetingRecording;
 }
 
 function updateDocumentStatus() {
@@ -441,7 +453,7 @@ async function answerQuestion(question, options = {}) {
     addMessage("user", trimmed, contextLabel());
   }
 
-  const assistantMessageId = addMessage("assistant", "Thinking...", "Processing");
+  const assistantMessageId = addMessage("assistant", "Thinking...", options.meta || "Processing");
   setProcessing(true);
 
   const matches = getBestChunks(trimmed);
@@ -450,19 +462,21 @@ async function answerQuestion(question, options = {}) {
   try {
     if (matches.length && confidence > DOCUMENT_MATCH_THRESHOLD) {
       const answer = localAnswer(trimmed, matches);
-      updateMessage(assistantMessageId, answer, `Documents | Match: ${confidence}%`);
-      addHistory(trimmed, `Document match ${confidence}%`);
+      updateMessage(assistantMessageId, answer, options.meta || `Documents | Match: ${confidence}%`);
+      if (!options.silentUserMessage) {
+        addHistory(trimmed, `Document match ${confidence}%`);
+      }
       return;
     }
 
     const result = await callAi(buildContextualQuestion(trimmed, matches));
-    updateMessage(assistantMessageId, result.answer, contextLabel());
-    addHistory(trimmed, result.model);
+    updateMessage(assistantMessageId, result.answer, options.meta || contextLabel());
+    addHistory(options.historyQuestion || trimmed, result.model);
   } catch (error) {
     if (hasDocumentAnswer(matches)) {
       const answer = localAnswer(trimmed, matches);
-      updateMessage(assistantMessageId, answer, `Documents only | Gemini unavailable | Match: ${confidence}%`);
-      addHistory(trimmed, `Document fallback ${confidence}%`);
+      updateMessage(assistantMessageId, answer, options.meta || `Documents only | Gemini unavailable | Match: ${confidence}%`);
+      addHistory(options.historyQuestion || trimmed, `Document fallback ${confidence}%`);
       return;
     }
 
@@ -535,14 +549,37 @@ function getAudioFileName(mimeType) {
   return mimeType.includes("mp4") ? "meeting-audio.mp4" : "meeting-audio.webm";
 }
 
+function getSelectedAudioLanguage() {
+  return elements.audioLanguage?.value || "auto";
+}
+
+function compactTranscriptForAnalysis(text, maxCharacters = 14000) {
+  const cleanText = text.replace(/\s+/g, " ").trim();
+  if (cleanText.length <= maxCharacters) {
+    return cleanText;
+  }
+  return cleanText.slice(-maxCharacters).replace(/^\S+\s*/, "").trim();
+}
+
 function shouldAnswerMeetingTranscript(text) {
   const cleanText = text.trim();
   const words = tokenize(cleanText);
-  return cleanText.endsWith("?") || words.length >= MIN_MEETING_AUTO_ANSWER_WORDS;
+  const questionLike = /\b(what|why|how|when|where|who|which|can|could|would|should|do|does|did|is|are|was|were|will|shall|tell|explain)\b/i.test(cleanText);
+  return cleanText.endsWith("?") || (questionLike && words.length >= MIN_MEETING_AUTO_ANSWER_WORDS);
 }
 
-async function maybeAnswerMeetingTranscript(transcript) {
-  const cleanTranscript = transcript.trim();
+function cancelScheduledMeetingAnswer() {
+  if (pendingMeetingAnswerTimer) {
+    window.clearTimeout(pendingMeetingAnswerTimer);
+    pendingMeetingAnswerTimer = null;
+  }
+}
+
+async function answerPendingMeetingTranscript() {
+  pendingMeetingAnswerTimer = null;
+  const cleanTranscript = pendingMeetingAnswerText.replace(/\s+/g, " ").trim();
+  pendingMeetingAnswerText = "";
+
   if (!shouldAnswerMeetingTranscript(cleanTranscript)) {
     return;
   }
@@ -561,16 +598,29 @@ async function maybeAnswerMeetingTranscript(transcript) {
   await answerQuestion(cleanTranscript);
 }
 
-async function sendMeetingAudioChunk(blob) {
-  if (meetingAudioUploadActive || !blob.size) {
+function scheduleMeetingTranscriptAnswer(transcript) {
+  const cleanTranscript = transcript.trim();
+  if (!cleanTranscript) {
     return;
   }
 
-  meetingAudioUploadActive = true;
+  pendingMeetingAnswerText = `${pendingMeetingAnswerText} ${cleanTranscript}`.trim();
+  cancelScheduledMeetingAnswer();
+  pendingMeetingAnswerTimer = window.setTimeout(() => {
+    answerPendingMeetingTranscript();
+  }, MEETING_QUESTION_SETTLE_MS);
+}
+
+async function sendMeetingAudioChunk(blob) {
+  if (!blob.size) {
+    return;
+  }
+
   setProcessing(true);
   try {
     const formData = new FormData();
     formData.append("file", blob, getAudioFileName(blob.type || ""));
+    formData.append("language", getSelectedAudioLanguage());
     const response = await fetch(apiUrl("/transcribe-audio"), {
       method: "POST",
       body: formData
@@ -587,7 +637,9 @@ async function sendMeetingAudioChunk(blob) {
       meetingTranscript.push(transcript);
       meetingTranscript = meetingTranscript.slice(-20);
       saveMeetingContext();
-      await maybeAnswerMeetingTranscript(transcript);
+      if (!meetingRecording) {
+        scheduleMeetingTranscriptAnswer(transcript);
+      }
     }
   } catch (error) {
     addMessage("assistant", `Meeting audio error: ${error.message}`, "Error");
@@ -596,7 +648,6 @@ async function sendMeetingAudioChunk(blob) {
       setMeetingAudioStatus("Quota exhausted");
     }
   } finally {
-    meetingAudioUploadActive = false;
     setProcessing(false);
   }
 }
@@ -667,7 +718,9 @@ function recordNextMeetingAudioSegment() {
   meetingAudioRecorder.addEventListener("stop", () => {
     if (segmentParts.length) {
       const blob = new Blob(segmentParts, { type: meetingAudioRecorder.mimeType || mimeType || "audio/webm" });
-      sendMeetingAudioChunk(blob);
+      const upload = sendMeetingAudioChunk(blob);
+      pendingTranscriptions.add(upload);
+      upload.finally(() => pendingTranscriptions.delete(upload));
     }
 
     if (meetingListening) {
@@ -712,14 +765,31 @@ async function shareMeetingAudio() {
     throw new Error("No shared audio found. Choose a tab or screen with audio sharing enabled.");
   }
 
-  audioOnlyStream = new MediaStream(audioTracks);
+  meetingMicStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      autoGainControl: true,
+      echoCancellation: true,
+      noiseSuppression: true
+    }
+  });
+
+  const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+  meetingMixerContext = new AudioContextConstructor();
+  const destination = meetingMixerContext.createMediaStreamDestination();
+  meetingMixerContext.createMediaStreamSource(new MediaStream(audioTracks)).connect(destination);
+  meetingMixerContext.createMediaStreamSource(meetingMicStream).connect(destination);
+  audioOnlyStream = destination.stream;
+
   for (const track of meetingAudioStream.getTracks()) {
+    track.addEventListener("ended", stopMeetingAudioSession);
+  }
+  for (const track of meetingMicStream.getTracks()) {
     track.addEventListener("ended", stopMeetingAudioSession);
   }
 
   meetingAudioShared = true;
   startMeetingAudioMeter(audioOnlyStream);
-  setMeetingAudioStatus("Audio shared");
+  setMeetingAudioStatus("Meeting and microphone audio ready");
   updateAudioStatus();
   updateContextIndicator();
 }
@@ -729,6 +799,8 @@ function startListeningSession() {
     setMeetingAudioStatus("Share meeting audio first");
     return;
   }
+  cancelScheduledMeetingAnswer();
+  pendingMeetingAnswerText = "";
   meetingListening = true;
   setMeetingAudioStatus("Listening...");
   updateAudioStatus();
@@ -736,27 +808,123 @@ function startListeningSession() {
   recordNextMeetingAudioSegment();
 }
 
-function stopListeningSession() {
-  meetingListening = false;
-
-  if (meetingAudioRecorder && meetingAudioRecorder.state !== "inactive") {
-    meetingAudioRecorder.stop();
+async function startRecordingSession() {
+  if (!meetingAudioShared) {
+    await shareMeetingAudio();
   }
+  meetingRecording = true;
+  meetingTranscript = [];
+  saveMeetingContext();
+  cancelScheduledMeetingAnswer();
+  pendingMeetingAnswerText = "";
+  if (!meetingListening) {
+    startListeningSession();
+  }
+  setMeetingAudioStatus("Recording meeting...");
+  updateAudioStatus();
+  updateContextIndicator();
+}
+
+function stopListeningSession({ keepStatus = false } = {}) {
+  meetingListening = false;
+  const recorder = meetingAudioRecorder;
+  let recorderStopped = Promise.resolve();
+
+  if (recorder && recorder.state !== "inactive") {
+    recorderStopped = new Promise((resolve) => {
+      recorder.addEventListener("stop", resolve, { once: true });
+    });
+    recorder.stop();
+  }
+  if (!keepStatus) {
+    setMeetingAudioStatus(meetingAudioShared ? "Audio shared" : "Not shared");
+  }
+  updateAudioStatus();
+  updateContextIndicator();
+  return recorderStopped;
+}
+
+async function generateMeetingAnalysis() {
+  cancelScheduledMeetingAnswer();
+  pendingMeetingAnswerText = "";
+
+  if (pendingTranscriptions.size) {
+    setMeetingAudioStatus("Finishing transcription...");
+    await Promise.allSettled(Array.from(pendingTranscriptions));
+  }
+
+  const transcript = compactTranscriptForAnalysis(meetingTranscript.join(" "));
+  if (!transcript) {
+    addMessage("assistant", "I could not detect enough clear speech to analyze this recording.", "Meeting analysis");
+    return;
+  }
+
+  const prompt = `Analyze this meeting transcript and write a detailed, useful meeting report.
+
+Include these sections:
+1. What the meeting was about
+2. Key decisions and discussion points
+3. What went good
+4. What went wrong or needs improvement
+5. Action items with owners if they are mentioned
+6. Follow-up questions or risks
+
+Be specific, practical, and write a long, polished response. If the transcript contains multiple languages, understand them together and answer in clear English.
+
+Transcript:
+${transcript}`;
+
+  await answerQuestion(prompt, {
+    silentUserMessage: true,
+    meta: "Meeting analysis",
+    historyQuestion: "Meeting recording analysis"
+  });
+}
+
+async function stopRecordingSession() {
+  if (!meetingRecording) {
+    return;
+  }
+
+  meetingRecording = false;
+  setMeetingAudioStatus("Stopping recording...");
+  const recorderStopped = stopListeningSession({ keepStatus: true });
+  await recorderStopped;
+  await generateMeetingAnalysis();
   setMeetingAudioStatus(meetingAudioShared ? "Audio shared" : "Not shared");
   updateAudioStatus();
   updateContextIndicator();
 }
 
-function stopMeetingAudioSession() {
-  stopListeningSession();
+async function stopMeetingAudioSession({ analyze = false } = {}) {
+  if (meetingRecording) {
+    meetingRecording = false;
+  }
+  const recorderStopped = stopListeningSession({ keepStatus: analyze });
+  await recorderStopped;
+  if (!analyze) {
+    cancelScheduledMeetingAnswer();
+    pendingMeetingAnswerText = "";
+  }
   meetingAudioShared = false;
 
   if (meetingAudioStream) {
     meetingAudioStream.getTracks().forEach((track) => track.stop());
     meetingAudioStream = null;
   }
+  if (meetingMicStream) {
+    meetingMicStream.getTracks().forEach((track) => track.stop());
+    meetingMicStream = null;
+  }
+  if (meetingMixerContext) {
+    meetingMixerContext.close();
+    meetingMixerContext = null;
+  }
   audioOnlyStream = null;
   stopMeetingAudioMeter();
+  if (analyze) {
+    await generateMeetingAnalysis();
+  }
   setMeetingAudioStatus("Not shared");
   updateAudioStatus();
   updateContextIndicator();
@@ -777,6 +945,8 @@ async function checkBackend() {
 }
 
 function clearChat({ clearDocuments = false } = {}) {
+  cancelScheduledMeetingAnswer();
+  pendingMeetingAnswerText = "";
   messages = [];
   history = [];
   meetingTranscript = [];
@@ -799,6 +969,8 @@ function clearChat({ clearDocuments = false } = {}) {
 }
 
 function loadState() {
+  cancelScheduledMeetingAnswer();
+  pendingMeetingAnswerText = "";
   clearStoredSessionData();
   documents = [];
   history = [];
@@ -888,6 +1060,29 @@ elements.stopListening.addEventListener("click", () => {
 
 elements.stopMeetingAudio.addEventListener("click", () => {
   stopMeetingAudioSession();
+});
+
+elements.startRecording.addEventListener("click", async () => {
+  try {
+    setProcessing(true);
+    await startRecordingSession();
+  } catch (error) {
+    meetingRecording = false;
+    addMessage("assistant", error.message, "Recording");
+    setMeetingAudioStatus("Error");
+    updateAudioStatus();
+  } finally {
+    setProcessing(false);
+  }
+});
+
+elements.stopRecording.addEventListener("click", async () => {
+  try {
+    setProcessing(true);
+    await stopRecordingSession();
+  } finally {
+    setProcessing(false);
+  }
 });
 
 elements.clearHistory.addEventListener("click", () => {
