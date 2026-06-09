@@ -42,10 +42,11 @@ const DEFAULT_LOCAL_BACKEND_URL = "http://127.0.0.1:8000";
 const DOCUMENT_MATCH_THRESHOLD = 40;
 const MAX_LOCAL_ANSWER_WORDS = 180;
 const MAX_CONTEXT_WORDS = 520;
+const AI_REQUEST_TIMEOUT_MS = 45000;
 const MEETING_AUDIO_SEGMENT_MS = 2000;
 const MEETING_AUTO_ANSWER_COOLDOWN_MS = 6000;
 const MEETING_QUESTION_SETTLE_MS = 4500;
-const MIN_MEETING_AUTO_ANSWER_WORDS = 8;
+const MIN_MEETING_AUTO_ANSWER_WORDS = 5;
 
 let audioOnlyStream = null;
 let documents = [];
@@ -423,13 +424,27 @@ function renderDocuments() {
 }
 
 async function callAi(question) {
-  const response = await fetch(apiUrl("/answer"), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ question })
-  });
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS);
+  let response;
+
+  try {
+    response = await fetch(apiUrl("/answer"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ question }),
+      signal: controller.signal
+    });
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("Answer request timed out. Check that Ollama is running or configure Gemini.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -587,7 +602,7 @@ function shouldAnswerMeetingTranscript(text) {
   const cleanText = text.trim();
   const words = tokenize(cleanText);
   const questionLike = /\b(what|why|how|when|where|who|which|can|could|would|should|do|does|did|is|are|was|were|will|shall|tell|explain)\b/i.test(cleanText);
-  return cleanText.endsWith("?") || (questionLike && words.length >= MIN_MEETING_AUTO_ANSWER_WORDS);
+  return cleanText.endsWith("?") || questionLike || words.length >= MIN_MEETING_AUTO_ANSWER_WORDS;
 }
 
 function cancelScheduledMeetingAnswer() {
@@ -1119,7 +1134,7 @@ elements.startListening.addEventListener("click", () => {
 });
 
 elements.stopListening.addEventListener("click", () => {
-  stopListeningSession();
+  stopMeetingAudioSession();
 });
 
 elements.stopMeetingAudio.addEventListener("click", () => {
