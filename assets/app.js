@@ -683,7 +683,7 @@ async function sendMeetingAudioChunk(blob) {
     }
   } catch (error) {
     if (error.status === 429) {
-      stopMeetingAudioSession();
+      stopListeningSession({ keepStatus: true, discardFinalChunk: true });
       setMeetingAudioStatus("Audio transcription paused");
     } else {
       startCurrentAnswer(`Meeting audio error: ${error.message}`, "Error");
@@ -867,6 +867,8 @@ function startListeningSession() {
 
 function stopListeningSession({ keepStatus = false, discardFinalChunk = false } = {}) {
   meetingListening = false;
+  cancelScheduledMeetingAnswer();
+  pendingMeetingAnswerText = "";
   const recorder = meetingAudioRecorder;
   let recorderStopped = Promise.resolve();
 
@@ -1093,7 +1095,7 @@ elements.startListening.addEventListener("click", () => {
 });
 
 elements.stopListening.addEventListener("click", () => {
-  stopMeetingAudioSession();
+  stopListeningSession({ discardFinalChunk: true });
 });
 
 elements.stopMeetingAudio.addEventListener("click", () => {
