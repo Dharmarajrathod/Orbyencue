@@ -512,7 +512,7 @@ async function answerQuestion(question, options = {}) {
   } catch (error) {
     if (hasDocumentAnswer(matches)) {
       const answer = localAnswer(trimmed, matches);
-      updateMessage(assistantMessageId, answer, options.meta || `Documents only | Gemini unavailable | Match: ${confidence}%`);
+      updateMessage(assistantMessageId, answer, options.meta || `Documents | Match: ${confidence}%`);
       addHistory(options.historyQuestion || trimmed, `Document fallback ${confidence}%`);
       return;
     }
@@ -682,10 +682,11 @@ async function sendMeetingAudioChunk(blob) {
       }
     }
   } catch (error) {
-    startCurrentAnswer(`Meeting audio error: ${error.message}`, "Error");
     if (error.status === 429) {
       stopMeetingAudioSession();
-      setMeetingAudioStatus("Quota exhausted");
+      setMeetingAudioStatus("Audio transcription paused");
+    } else {
+      startCurrentAnswer(`Meeting audio error: ${error.message}`, "Error");
     }
   } finally {
     setProcessing(false);
