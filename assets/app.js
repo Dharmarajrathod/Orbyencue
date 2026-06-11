@@ -861,10 +861,6 @@ async function shareMeetingAudio() {
 
   meetingSharedAudioStream = new MediaStream(audioTracks);
 
-  for (const track of audioTracks) {
-    track.addEventListener("ended", stopMeetingAudioSession);
-  }
-
   meetingAudioShared = true;
   startMeetingAudioMeter(meetingSharedAudioStream);
   setMeetingAudioStatus("Audio shared");
