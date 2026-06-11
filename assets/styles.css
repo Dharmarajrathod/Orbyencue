@@ -385,6 +385,38 @@ p {
   display: none;
 }
 
+.recordingPlayback {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  text-align: left;
+}
+
+.recordingPlayback:empty {
+  display: none;
+}
+
+.recordingPlaybackHeader {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.recordingPlayback audio {
+  width: 100%;
+}
+
+.recordingPlayback a {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
 .conversationWrap {
   display: grid;
   gap: 10px;

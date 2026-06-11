@@ -20,6 +20,7 @@ const elements = {
   meetingAudioStatus: document.querySelector("#meetingAudioStatus"),
   newChat: document.querySelector("#newChat"),
   processingStatus: document.querySelector("#processingStatus"),
+  recordingPlayback: document.querySelector("#recordingPlayback"),
   settingsButton: document.querySelector("#settingsButton"),
   startListening: document.querySelector("#startListening"),
   startMeetingAudio: document.querySelector("#startMeetingAudio"),
@@ -72,6 +73,8 @@ let meetingListening = false;
 let meetingRecording = false;
 let meetingRecorderGeneration = 0;
 let meetingTranscript = [];
+let displayedMeetingTranscript = [];
+let currentRecordingUrl = "";
 
 function getApiBaseUrl() {
   const configured = localStorage.getItem(STORAGE_KEYS.apiBaseUrl) || window.ORBYNE_API_BASE_URL || "";
@@ -156,7 +159,37 @@ function showLiveTranscript(text) {
   if (!elements.liveTranscript) {
     return;
   }
-  elements.liveTranscript.textContent = text ? `Shared audio: ${text}` : "";
+  elements.liveTranscript.textContent = text;
+}
+
+function renderLiveTranscript() {
+  const transcript = displayedMeetingTranscript.slice(-6).join(" ").trim();
+  showLiveTranscript(transcript ? `Shared audio: ${transcript}` : "");
+}
+
+function clearRecordingPlayback() {
+  if (currentRecordingUrl) {
+    URL.revokeObjectURL(currentRecordingUrl);
+    currentRecordingUrl = "";
+  }
+  if (elements.recordingPlayback) {
+    elements.recordingPlayback.innerHTML = "";
+  }
+}
+
+function renderRecordingPlayback(blob) {
+  if (!elements.recordingPlayback || !blob?.size) {
+    return;
+  }
+
+  clearRecordingPlayback();
+  currentRecordingUrl = URL.createObjectURL(blob);
+  const extension = blob.type.includes("mp4") ? "mp4" : "webm";
+  elements.recordingPlayback.innerHTML = `
+    <div class="recordingPlaybackHeader">Recorded audio</div>
+    <audio controls src="${currentRecordingUrl}"></audio>
+    <a href="${currentRecordingUrl}" download="orbynecue-recording.${extension}">Download audio</a>
+  `;
 }
 
 function escapeHtml(value) {
@@ -680,7 +713,7 @@ async function answerPendingMeetingTranscript() {
   lastMeetingAnswerText = normalized;
   await answerQuestion(cleanTranscript);
   removeAnsweredMeetingSegments(answeredSegments);
-  showLiveTranscript("");
+  renderLiveTranscript();
 }
 
 function scheduleMeetingTranscriptAnswer(transcript) {
@@ -721,7 +754,9 @@ async function sendMeetingAudioChunk(blob) {
     const transcript = (payload.transcript || "").trim();
     if (transcript) {
       if (!meetingRecording) {
-        showLiveTranscript(transcript);
+        displayedMeetingTranscript.push(transcript);
+        displayedMeetingTranscript = displayedMeetingTranscript.slice(-20);
+        renderLiveTranscript();
       }
       meetingTranscript.push(transcript);
       meetingTranscript = meetingTranscript.slice(-20);
@@ -910,6 +945,7 @@ async function startRecordingSession() {
   });
   micRecorder.start();
   meetingRecording = true;
+  clearRecordingPlayback();
   setMeetingAudioStatus(meetingListening ? "Listening... microphone recording" : "Microphone recording");
   updateAudioStatus();
   updateContextIndicator();
@@ -1013,6 +1049,10 @@ async function stopRecordingSession() {
     });
   }
   micRecorder = null;
+  if (micRecordingParts.length) {
+    const mimeType = micRecordingParts[0]?.type || getSupportedAudioMimeType() || "audio/webm";
+    renderRecordingPlayback(new Blob(micRecordingParts, { type: mimeType }));
+  }
   micRecordingParts = [];
 
   if (meetingMicStream) {
@@ -1037,7 +1077,6 @@ async function stopMeetingAudioSession() {
     meetingAudioStream = null;
   }
   meetingSharedAudioStream = null;
-  showLiveTranscript("");
   stopMeetingAudioMeter();
   setMeetingAudioStatus(meetingRecording ? "Microphone recording" : "Not shared");
   updateAudioStatus();
@@ -1064,6 +1103,7 @@ function clearChat({ clearDocuments = false } = {}) {
   messages = [];
   history = [];
   meetingTranscript = [];
+  displayedMeetingTranscript = [];
   localStorage.removeItem(STORAGE_KEYS.messages);
   localStorage.removeItem(STORAGE_KEYS.history);
   localStorage.removeItem(STORAGE_KEYS.meetingContext);
@@ -1078,6 +1118,8 @@ function clearChat({ clearDocuments = false } = {}) {
   }
 
   renderMessages();
+  renderLiveTranscript();
+  clearRecordingPlayback();
   renderHistory();
   updateContextIndicator();
 }
@@ -1090,10 +1132,13 @@ function loadState() {
   history = [];
   messages = [];
   meetingTranscript = [];
+  displayedMeetingTranscript = [];
 
   renderDocuments();
   renderHistory();
   renderMessages();
+  renderLiveTranscript();
+  clearRecordingPlayback();
   updateAudioStatus();
   updateContextIndicator();
 }
