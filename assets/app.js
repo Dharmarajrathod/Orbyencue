@@ -44,7 +44,8 @@ const DOCUMENT_MATCH_THRESHOLD = 40;
 const MAX_LOCAL_ANSWER_WORDS = 180;
 const MAX_CONTEXT_WORDS = 520;
 const AI_REQUEST_TIMEOUT_MS = 45000;
-const MEETING_AUDIO_SEGMENT_MS = 7000;
+const MEETING_AUDIO_SEGMENT_MS = 3000;
+const MEETING_AUDIO_FIRST_CHUNK_MS = 1200;
 const MEETING_RECORDER_RESTART_DELAY_MS = 250;
 const MEETING_AUTO_ANSWER_COOLDOWN_MS = 6000;
 const MEETING_QUESTION_SETTLE_MS = 4500;
@@ -833,6 +834,25 @@ function stopMeetingAudioRequestTimer() {
   }
 }
 
+function requestMeetingAudioData(recorder, recorderGeneration) {
+  if (!meetingListening || recorderGeneration !== meetingRecorderGeneration) {
+    stopMeetingAudioRequestTimer();
+    return;
+  }
+  if (recorder.state === "recording") {
+    try {
+      recorder.requestData();
+    } catch (error) {
+      setMeetingAudioStatus("Listening... restarting audio");
+      try {
+        recorder.stop();
+      } catch (stopError) {
+        recordNextMeetingAudioSegment();
+      }
+    }
+  }
+}
+
 function endSharedAudioSession(statusText = "Audio sharing ended") {
   meetingListening = false;
   meetingRecorderGeneration += 1;
@@ -923,14 +943,11 @@ function recordNextMeetingAudioSegment() {
   });
 
   recorder.start();
+  window.setTimeout(() => {
+    requestMeetingAudioData(recorder, recorderGeneration);
+  }, MEETING_AUDIO_FIRST_CHUNK_MS);
   meetingAudioRequestTimer = window.setInterval(() => {
-    if (!meetingListening || recorderGeneration !== meetingRecorderGeneration) {
-      stopMeetingAudioRequestTimer();
-      return;
-    }
-    if (recorder.state === "recording") {
-      recorder.requestData();
-    }
+    requestMeetingAudioData(recorder, recorderGeneration);
   }, MEETING_AUDIO_SEGMENT_MS);
 }
 
