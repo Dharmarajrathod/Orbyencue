@@ -45,6 +45,7 @@ const MAX_LOCAL_ANSWER_WORDS = 180;
 const MAX_CONTEXT_WORDS = 520;
 const AI_REQUEST_TIMEOUT_MS = 45000;
 const MEETING_AUDIO_SEGMENT_MS = 7000;
+const MEETING_RECORDER_RESTART_DELAY_MS = 250;
 const MEETING_AUTO_ANSWER_COOLDOWN_MS = 6000;
 const MEETING_QUESTION_SETTLE_MS = 4500;
 const MIN_MEETING_AUTO_ANSWER_WORDS = 5;
@@ -58,6 +59,7 @@ let pendingMeetingAnswerText = "";
 let pendingMeetingAnswerTimer = null;
 let meetingAudioContext = null;
 let meetingAudioLevelTimer = null;
+let meetingAudioRequestTimer = null;
 let discardMeetingAudioChunks = false;
 let meetingAudioRecorder = null;
 let meetingAudioShared = false;
@@ -824,6 +826,32 @@ function stopMeetingAudioMeter() {
   setMeetingAudioLevel(0);
 }
 
+function stopMeetingAudioRequestTimer() {
+  if (meetingAudioRequestTimer) {
+    window.clearInterval(meetingAudioRequestTimer);
+    meetingAudioRequestTimer = null;
+  }
+}
+
+function endSharedAudioSession(statusText = "Audio sharing ended") {
+  meetingListening = false;
+  meetingRecorderGeneration += 1;
+  stopMeetingAudioRequestTimer();
+  cancelScheduledMeetingAnswer();
+  pendingMeetingAnswerSegments = [];
+  pendingMeetingAnswerText = "";
+  meetingAudioShared = false;
+  meetingSharedAudioStream = null;
+  if (meetingAudioStream) {
+    meetingAudioStream.getTracks().forEach((track) => track.stop());
+    meetingAudioStream = null;
+  }
+  stopMeetingAudioMeter();
+  setMeetingAudioStatus(statusText);
+  updateAudioStatus();
+  updateContextIndicator();
+}
+
 function recordNextMeetingAudioSegment() {
   if (!meetingListening || !hasSharedAudioSession()) {
     return;
@@ -857,6 +885,7 @@ function recordNextMeetingAudioSegment() {
 
   meetingAudioRecorder = recorder;
   discardMeetingAudioChunks = false;
+  stopMeetingAudioRequestTimer();
 
   recorder.addEventListener("dataavailable", (event) => {
     if (discardMeetingAudioChunks || !event.data?.size) {
@@ -869,17 +898,40 @@ function recordNextMeetingAudioSegment() {
   });
 
   recorder.addEventListener("stop", () => {
+    stopMeetingAudioRequestTimer();
     if (meetingAudioRecorder === recorder) {
       meetingAudioRecorder = null;
     }
 
     if (meetingListening && recorderGeneration === meetingRecorderGeneration) {
-      setMeetingAudioStatus("Audio recorder restarted");
-      window.setTimeout(recordNextMeetingAudioSegment, 1000);
+      setMeetingAudioStatus(hasActiveSharedAudio() ? "Listening..." : "Audio shared, waiting for audio");
+      window.setTimeout(recordNextMeetingAudioSegment, MEETING_RECORDER_RESTART_DELAY_MS);
     }
   });
 
-  recorder.start(MEETING_AUDIO_SEGMENT_MS);
+  recorder.addEventListener("error", () => {
+    if (meetingListening && recorderGeneration === meetingRecorderGeneration) {
+      stopMeetingAudioRequestTimer();
+      try {
+        if (recorder.state !== "inactive") {
+          recorder.stop();
+        }
+      } catch (error) {
+        recordNextMeetingAudioSegment();
+      }
+    }
+  });
+
+  recorder.start();
+  meetingAudioRequestTimer = window.setInterval(() => {
+    if (!meetingListening || recorderGeneration !== meetingRecorderGeneration) {
+      stopMeetingAudioRequestTimer();
+      return;
+    }
+    if (recorder.state === "recording") {
+      recorder.requestData();
+    }
+  }, MEETING_AUDIO_SEGMENT_MS);
 }
 
 async function shareMeetingAudio() {
@@ -912,6 +964,11 @@ async function shareMeetingAudio() {
   }
 
   meetingSharedAudioStream = new MediaStream(audioTracks);
+  for (const track of audioTracks) {
+    track.addEventListener("ended", () => {
+      endSharedAudioSession("Audio sharing ended");
+    });
+  }
 
   meetingAudioShared = true;
   startMeetingAudioMeter(meetingSharedAudioStream);
@@ -975,6 +1032,7 @@ function startListeningSession() {
 
 function stopListeningSession({ keepStatus = false, discardFinalChunk = false } = {}) {
   meetingListening = false;
+  stopMeetingAudioRequestTimer();
   cancelScheduledMeetingAnswer();
   pendingMeetingAnswerSegments = [];
   pendingMeetingAnswerText = "";
@@ -1070,6 +1128,7 @@ async function stopMeetingAudioSession() {
   await recorderStopped;
   cancelScheduledMeetingAnswer();
   pendingMeetingAnswerText = "";
+  stopMeetingAudioRequestTimer();
   meetingAudioShared = false;
 
   if (meetingAudioStream) {
