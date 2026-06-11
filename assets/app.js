@@ -57,7 +57,7 @@ let pendingMeetingAnswerText = "";
 let pendingMeetingAnswerTimer = null;
 let meetingAudioContext = null;
 let meetingAudioLevelTimer = null;
-let discardNextMeetingAudioChunk = false;
+let discardMeetingAudioChunks = false;
 let meetingAudioRecorder = null;
 let meetingAudioShared = false;
 let meetingSharedAudioStream = null;
@@ -806,7 +806,6 @@ function recordNextMeetingAudioSegment() {
   }
 
   const mimeType = getSupportedAudioMimeType();
-  const segmentParts = [];
   let recorder;
 
   try {
@@ -822,38 +821,30 @@ function recordNextMeetingAudioSegment() {
   }
 
   meetingAudioRecorder = recorder;
+  discardMeetingAudioChunks = false;
 
   recorder.addEventListener("dataavailable", (event) => {
-    if (event.data?.size) {
-      segmentParts.push(event.data);
+    if (discardMeetingAudioChunks || !event.data?.size) {
+      return;
     }
+
+    const upload = sendMeetingAudioChunk(event.data);
+    pendingTranscriptions.add(upload);
+    upload.finally(() => pendingTranscriptions.delete(upload));
   });
 
   recorder.addEventListener("stop", () => {
-    if (discardNextMeetingAudioChunk) {
-      discardNextMeetingAudioChunk = false;
-    } else if (segmentParts.length) {
-      const blob = new Blob(segmentParts, { type: recorder.mimeType || mimeType || "audio/webm" });
-      const upload = sendMeetingAudioChunk(blob);
-      pendingTranscriptions.add(upload);
-      upload.finally(() => pendingTranscriptions.delete(upload));
-    }
-
     if (meetingAudioRecorder === recorder) {
       meetingAudioRecorder = null;
     }
 
     if (meetingListening && recorderGeneration === meetingRecorderGeneration) {
-      window.setTimeout(recordNextMeetingAudioSegment, 250);
+      setMeetingAudioStatus("Audio recorder restarted");
+      window.setTimeout(recordNextMeetingAudioSegment, 1000);
     }
   });
 
-  recorder.start();
-  window.setTimeout(() => {
-    if (meetingAudioRecorder === recorder && recorder.state === "recording") {
-      recorder.stop();
-    }
-  }, MEETING_AUDIO_SEGMENT_MS);
+  recorder.start(MEETING_AUDIO_SEGMENT_MS);
 }
 
 async function shareMeetingAudio() {
@@ -959,7 +950,7 @@ function stopListeningSession({ keepStatus = false, discardFinalChunk = false } 
     recorderStopped = new Promise((resolve) => {
       recorder.addEventListener("stop", resolve, { once: true });
     });
-    discardNextMeetingAudioChunk = discardFinalChunk;
+    discardMeetingAudioChunks = discardFinalChunk;
     recorder.stop();
   }
   if (!keepStatus) {
