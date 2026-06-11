@@ -105,13 +105,17 @@ function hasActiveSharedAudio() {
   return Boolean(meetingSharedAudioStream?.getAudioTracks().some((track) => track.readyState === "live"));
 }
 
+function hasSharedAudioSession() {
+  return Boolean(meetingAudioShared && meetingSharedAudioStream);
+}
+
 function updateAudioStatus() {
-  const sharedAudioActive = meetingAudioShared && hasActiveSharedAudio();
-  setStatus(elements.audioSharedStatus, sharedAudioActive ? "Audio Shared" : "Audio Not Shared", sharedAudioActive ? "" : "neutral");
+  const sharedAudioSession = hasSharedAudioSession();
+  setStatus(elements.audioSharedStatus, sharedAudioSession ? "Audio Shared" : "Audio Not Shared", sharedAudioSession ? "" : "neutral");
   setStatus(elements.listeningStatus, meetingRecording ? "Recording" : meetingListening ? "Listening" : "Idle", meetingListening || meetingRecording ? "" : "neutral");
-  elements.startMeetingAudio.disabled = sharedAudioActive;
-  elements.stopMeetingAudio.disabled = !sharedAudioActive;
-  elements.startListening.disabled = !sharedAudioActive || meetingListening;
+  elements.startMeetingAudio.disabled = sharedAudioSession;
+  elements.stopMeetingAudio.disabled = !sharedAudioSession;
+  elements.startListening.disabled = !sharedAudioSession || meetingListening;
   elements.stopListening.disabled = !meetingListening;
   elements.startRecording.disabled = meetingRecording;
   elements.stopRecording.disabled = !meetingRecording;
@@ -728,8 +732,7 @@ async function sendMeetingAudioChunk(blob) {
     }
   } catch (error) {
     if (error.status === 429) {
-      stopListeningSession({ keepStatus: true, discardFinalChunk: true });
-      setMeetingAudioStatus("Audio transcription paused");
+      setMeetingAudioStatus(meetingListening ? "Listening... transcription paused" : "Audio shared");
     } else {
       startCurrentAnswer(`Meeting audio error: ${error.message}`, "Error");
     }
@@ -787,14 +790,37 @@ function stopMeetingAudioMeter() {
 }
 
 function recordNextMeetingAudioSegment() {
-  if (!meetingListening || !hasActiveSharedAudio()) {
+  if (!meetingListening || !hasSharedAudioSession()) {
     return;
   }
 
   const recorderGeneration = meetingRecorderGeneration;
+  if (!hasActiveSharedAudio()) {
+    setMeetingAudioStatus("Audio shared, waiting for audio");
+    window.setTimeout(() => {
+      if (meetingListening && recorderGeneration === meetingRecorderGeneration) {
+        recordNextMeetingAudioSegment();
+      }
+    }, 1000);
+    return;
+  }
+
   const mimeType = getSupportedAudioMimeType();
   const segmentParts = [];
-  const recorder = new MediaRecorder(meetingSharedAudioStream, mimeType ? { mimeType } : undefined);
+  let recorder;
+
+  try {
+    recorder = new MediaRecorder(meetingSharedAudioStream, mimeType ? { mimeType } : undefined);
+  } catch (error) {
+    setMeetingAudioStatus("Audio shared, recorder paused");
+    window.setTimeout(() => {
+      if (meetingListening && recorderGeneration === meetingRecorderGeneration) {
+        recordNextMeetingAudioSegment();
+      }
+    }, 1000);
+    return;
+  }
+
   meetingAudioRecorder = recorder;
 
   recorder.addEventListener("dataavailable", (event) => {
@@ -899,18 +925,22 @@ async function startRecordingSession() {
 }
 
 function startListeningSession() {
-  if (!hasActiveSharedAudio()) {
+  if (!hasSharedAudioSession()) {
     setMeetingAudioStatus("Share meeting audio first");
-    meetingAudioShared = false;
     updateAudioStatus();
     return;
+  }
+  if (!hasActiveSharedAudio()) {
+    setMeetingAudioStatus("Audio shared, waiting for audio");
   }
   cancelScheduledMeetingAnswer();
   pendingMeetingAnswerSegments = [];
   pendingMeetingAnswerText = "";
   meetingListening = true;
   meetingRecorderGeneration += 1;
-  setMeetingAudioStatus("Listening...");
+  if (hasActiveSharedAudio()) {
+    setMeetingAudioStatus("Listening...");
+  }
   updateAudioStatus();
   updateContextIndicator();
   recordNextMeetingAudioSegment();
@@ -933,7 +963,7 @@ function stopListeningSession({ keepStatus = false, discardFinalChunk = false } 
     recorder.stop();
   }
   if (!keepStatus) {
-    setMeetingAudioStatus(meetingAudioShared && hasActiveSharedAudio() ? "Audio shared" : "Not shared");
+    setMeetingAudioStatus(hasSharedAudioSession() ? "Audio shared" : "Not shared");
   }
   updateAudioStatus();
   updateContextIndicator();
