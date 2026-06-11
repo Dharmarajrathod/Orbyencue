@@ -52,6 +52,7 @@ let documents = [];
 let history = [];
 let lastMeetingAnswerAt = 0;
 let lastMeetingAnswerText = "";
+let pendingMeetingAnswerSegments = [];
 let pendingMeetingAnswerText = "";
 let pendingMeetingAnswerTimer = null;
 let meetingAudioContext = null;
@@ -69,6 +70,7 @@ let messages = [];
 let processingCount = 0;
 let meetingListening = false;
 let meetingRecording = false;
+let meetingRecorderGeneration = 0;
 let meetingTranscript = [];
 
 function getApiBaseUrl() {
@@ -312,6 +314,39 @@ function saveDocuments() {
 
 function saveMeetingContext() {
   localStorage.setItem(STORAGE_KEYS.meetingContext, JSON.stringify(meetingTranscript.slice(-20)));
+}
+
+function normalizedTranscriptKey(text) {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function removeAnsweredMeetingSegments(segments) {
+  const segmentCounts = new Map();
+  for (const segment of segments) {
+    const key = normalizedTranscriptKey(segment);
+    if (key) {
+      segmentCounts.set(key, (segmentCounts.get(key) || 0) + 1);
+    }
+  }
+
+  if (!segmentCounts.size) {
+    return;
+  }
+
+  meetingTranscript = meetingTranscript.filter((segment) => {
+    const key = normalizedTranscriptKey(segment);
+    const remaining = segmentCounts.get(key) || 0;
+    if (!remaining) {
+      return true;
+    }
+    if (remaining === 1) {
+      segmentCounts.delete(key);
+    } else {
+      segmentCounts.set(key, remaining - 1);
+    }
+    return false;
+  });
+  saveMeetingContext();
 }
 
 function clearStoredSessionData() {
@@ -614,7 +649,9 @@ function cancelScheduledMeetingAnswer() {
 
 async function answerPendingMeetingTranscript() {
   pendingMeetingAnswerTimer = null;
+  const answeredSegments = pendingMeetingAnswerSegments;
   const cleanTranscript = pendingMeetingAnswerText.replace(/\s+/g, " ").trim();
+  pendingMeetingAnswerSegments = [];
   pendingMeetingAnswerText = "";
 
   if (!shouldAnswerMeetingTranscript(cleanTranscript)) {
@@ -633,6 +670,8 @@ async function answerPendingMeetingTranscript() {
   lastMeetingAnswerAt = now;
   lastMeetingAnswerText = normalized;
   await answerQuestion(cleanTranscript);
+  removeAnsweredMeetingSegments(answeredSegments);
+  showLiveTranscript("");
 }
 
 function scheduleMeetingTranscriptAnswer(transcript) {
@@ -642,6 +681,7 @@ function scheduleMeetingTranscriptAnswer(transcript) {
   }
 
   pendingMeetingAnswerText = `${pendingMeetingAnswerText} ${cleanTranscript}`.trim();
+  pendingMeetingAnswerSegments.push(cleanTranscript);
   cancelScheduledMeetingAnswer();
   pendingMeetingAnswerTimer = window.setTimeout(() => {
     answerPendingMeetingTranscript();
@@ -746,35 +786,41 @@ function recordNextMeetingAudioSegment() {
     return;
   }
 
+  const recorderGeneration = meetingRecorderGeneration;
   const mimeType = getSupportedAudioMimeType();
   const segmentParts = [];
-  meetingAudioRecorder = new MediaRecorder(meetingSharedAudioStream, mimeType ? { mimeType } : undefined);
+  const recorder = new MediaRecorder(meetingSharedAudioStream, mimeType ? { mimeType } : undefined);
+  meetingAudioRecorder = recorder;
 
-  meetingAudioRecorder.addEventListener("dataavailable", (event) => {
+  recorder.addEventListener("dataavailable", (event) => {
     if (event.data?.size) {
       segmentParts.push(event.data);
     }
   });
 
-  meetingAudioRecorder.addEventListener("stop", () => {
+  recorder.addEventListener("stop", () => {
     if (discardNextMeetingAudioChunk) {
       discardNextMeetingAudioChunk = false;
     } else if (segmentParts.length) {
-      const blob = new Blob(segmentParts, { type: meetingAudioRecorder.mimeType || mimeType || "audio/webm" });
+      const blob = new Blob(segmentParts, { type: recorder.mimeType || mimeType || "audio/webm" });
       const upload = sendMeetingAudioChunk(blob);
       pendingTranscriptions.add(upload);
       upload.finally(() => pendingTranscriptions.delete(upload));
     }
 
-    if (meetingListening) {
+    if (meetingAudioRecorder === recorder) {
+      meetingAudioRecorder = null;
+    }
+
+    if (meetingListening && recorderGeneration === meetingRecorderGeneration) {
       window.setTimeout(recordNextMeetingAudioSegment, 250);
     }
   });
 
-  meetingAudioRecorder.start();
+  recorder.start();
   window.setTimeout(() => {
-    if (meetingAudioRecorder?.state === "recording") {
-      meetingAudioRecorder.stop();
+    if (meetingAudioRecorder === recorder && recorder.state === "recording") {
+      recorder.stop();
     }
   }, MEETING_AUDIO_SEGMENT_MS);
 }
@@ -810,7 +856,7 @@ async function shareMeetingAudio() {
 
   meetingSharedAudioStream = new MediaStream(audioTracks);
 
-  for (const track of meetingAudioStream.getTracks()) {
+  for (const track of audioTracks) {
     track.addEventListener("ended", stopMeetingAudioSession);
   }
 
@@ -857,8 +903,10 @@ function startListeningSession() {
     return;
   }
   cancelScheduledMeetingAnswer();
+  pendingMeetingAnswerSegments = [];
   pendingMeetingAnswerText = "";
   meetingListening = true;
+  meetingRecorderGeneration += 1;
   setMeetingAudioStatus("Listening...");
   updateAudioStatus();
   updateContextIndicator();
@@ -868,7 +916,9 @@ function startListeningSession() {
 function stopListeningSession({ keepStatus = false, discardFinalChunk = false } = {}) {
   meetingListening = false;
   cancelScheduledMeetingAnswer();
+  pendingMeetingAnswerSegments = [];
   pendingMeetingAnswerText = "";
+  meetingRecorderGeneration += 1;
   const recorder = meetingAudioRecorder;
   let recorderStopped = Promise.resolve();
 
