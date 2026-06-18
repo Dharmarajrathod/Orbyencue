@@ -68,4 +68,12 @@ def vosk_model_path() -> Path:
     if explicit_path:
         return Path(explicit_path)
 
-    return resource_path("models/vosk-model-small-en-us-0.15")
+    default_path = resource_path("models/vosk-model-small-en-us-0.15")
+    if default_path.exists():
+        return default_path
+
+    bundled_repo_path = resource_path("New_Rep_ITool/models/vosk-model-small-en-us-0.15")
+    if bundled_repo_path.exists():
+        return bundled_repo_path
+
+    return default_path
