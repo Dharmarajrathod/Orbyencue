@@ -638,6 +638,140 @@ body.loginMode {
   position: relative;
 }
 
+.ambientLights {
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  position: fixed;
+  z-index: 0;
+}
+
+.ambientBlob {
+  animation: ambientBlobDrift var(--duration, 30s) ease-in-out var(--delay, 0s) infinite alternate;
+  border-radius: 46% 54% 62% 38% / 42% 46% 54% 58%;
+  filter: blur(64px) saturate(125%);
+  height: var(--size, 34vw);
+  left: var(--left, 0%);
+  min-height: 320px;
+  min-width: 320px;
+  opacity: var(--opacity, 0.42);
+  position: absolute;
+  top: var(--top, 0%);
+  transform-origin: center;
+  width: var(--size, 34vw);
+  will-change: transform;
+}
+
+.publicSite > main,
+.publicSite > footer {
+  position: relative;
+  z-index: 1;
+}
+
+.ambientBlobOne {
+  --size: 38vw;
+  --left: -10%;
+  --top: -8%;
+  --duration: 34s;
+  --x1: 22vw;
+  --y1: 14vh;
+  --x2: 8vw;
+  --y2: 46vh;
+  --x3: 34vw;
+  --y3: 68vh;
+  background: radial-gradient(circle at 35% 35%, rgba(245, 164, 0, 0.72), rgba(245, 164, 0, 0.08) 66%, transparent 74%);
+}
+
+.ambientBlobTwo {
+  --size: 34vw;
+  --left: 64%;
+  --top: -12%;
+  --duration: 39s;
+  --delay: -8s;
+  --x1: -18vw;
+  --y1: 22vh;
+  --x2: -42vw;
+  --y2: 48vh;
+  --x3: -12vw;
+  --y3: 76vh;
+  background: radial-gradient(circle at 42% 38%, rgba(139, 92, 246, 0.5), rgba(139, 92, 246, 0.06) 68%, transparent 76%);
+}
+
+.ambientBlobThree {
+  --size: 30vw;
+  --left: 18%;
+  --top: 34%;
+  --duration: 31s;
+  --delay: -15s;
+  --x1: 38vw;
+  --y1: -18vh;
+  --x2: 52vw;
+  --y2: 24vh;
+  --x3: -8vw;
+  --y3: 44vh;
+  background: radial-gradient(circle at 38% 38%, rgba(56, 189, 248, 0.42), rgba(56, 189, 248, 0.05) 68%, transparent 76%);
+}
+
+.ambientBlobFour {
+  --size: 36vw;
+  --left: 72%;
+  --top: 48%;
+  --duration: 42s;
+  --delay: -21s;
+  --x1: -26vw;
+  --y1: -26vh;
+  --x2: -58vw;
+  --y2: 10vh;
+  --x3: -30vw;
+  --y3: 38vh;
+  background: radial-gradient(circle at 40% 40%, rgba(245, 164, 0, 0.52), rgba(245, 164, 0, 0.05) 68%, transparent 76%);
+}
+
+.ambientBlobFive {
+  --size: 28vw;
+  --left: -5%;
+  --top: 70%;
+  --duration: 37s;
+  --delay: -11s;
+  --x1: 30vw;
+  --y1: -30vh;
+  --x2: 62vw;
+  --y2: -48vh;
+  --x3: 82vw;
+  --y3: -16vh;
+  background: radial-gradient(circle at 42% 42%, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.04) 68%, transparent 76%);
+}
+
+.ambientBlobSix {
+  --size: 32vw;
+  --left: 42%;
+  --top: 76%;
+  --duration: 45s;
+  --delay: -28s;
+  --x1: -32vw;
+  --y1: -52vh;
+  --x2: 28vw;
+  --y2: -64vh;
+  --x3: 42vw;
+  --y3: -28vh;
+  background: radial-gradient(circle at 40% 40%, rgba(236, 72, 153, 0.34), rgba(236, 72, 153, 0.04) 68%, transparent 76%);
+}
+
+@keyframes ambientBlobDrift {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(0.88);
+  }
+  32% {
+    transform: translate3d(var(--x1), var(--y1), 0) rotate(82deg) scale(1.08);
+  }
+  66% {
+    transform: translate3d(var(--x2), var(--y2), 0) rotate(188deg) scale(0.96);
+  }
+  100% {
+    transform: translate3d(var(--x3), var(--y3), 0) rotate(310deg) scale(1.14);
+  }
+}
+
 .publicSite::before {
   animation: gradientDrift 16s ease-in-out infinite alternate;
   background:
@@ -1621,6 +1755,10 @@ body.loginMode {
   .showcaseCard,
   .showcaseCard img {
     transition: none;
+  }
+
+  .ambientBlob {
+    animation: none;
   }
 }
 
