@@ -1109,6 +1109,36 @@ body.loginMode {
   padding: 20px;
 }
 
+.demoCtaRow {
+  display: flex;
+  justify-content: center;
+  margin-top: 32px;
+}
+
+.demoCtaRow .primaryCta {
+  min-width: 210px;
+}
+
+.subscriptionEmail {
+  flex-direction: column;
+  gap: 3px;
+  min-width: 330px;
+  text-align: center;
+}
+
+.subscriptionEmail small {
+  color: #4b5563;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+@media (max-width: 620px) {
+  .subscriptionEmail {
+    min-width: 0;
+    width: 100%;
+  }
+}
+
 .demoColumn,
 .glassCard {
   backdrop-filter: blur(20px);
@@ -1149,11 +1179,23 @@ body.loginMode {
 }
 
 .iconDot {
+  align-items: center;
   background: linear-gradient(135deg, #2563eb, #7c3aed);
   border-radius: 18px;
   box-shadow: 0 14px 34px rgba(56, 189, 248, 0.24);
+  display: inline-flex;
   height: 42px;
+  justify-content: center;
   width: 42px;
+}
+
+.iconDot svg {
+  width: 23px;
+  height: 23px;
+  stroke: #171717;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .iconDot.cyan {
@@ -1407,6 +1449,166 @@ body.loginMode {
   .motionItem.isVisible {
     opacity: 1;
     transform: none;
+    transition: none;
+  }
+}
+
+/* Video and workflow gallery */
+.mediaShowcase {
+  position: relative;
+  padding-top: 150px;
+  padding-bottom: 150px;
+}
+
+.videoGlass {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 26px;
+  background: rgba(247, 247, 247, 0.44);
+  box-shadow: 0 28px 70px rgba(23, 23, 23, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(20px) saturate(135%);
+  -webkit-backdrop-filter: blur(20px) saturate(135%);
+}
+
+.videoFrame {
+  position: relative;
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  border: 1px solid rgba(23, 23, 23, 0.12);
+  border-radius: 18px;
+  background: #171717;
+}
+
+.videoFrame iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.videoDescription {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 18px 16px;
+  text-align: center;
+}
+
+.showcaseCard figcaption > span {
+  color: #f5a400;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.videoDescription h3,
+.showcaseCard h3 {
+  margin: 0;
+  color: #171717;
+  letter-spacing: -0.025em;
+}
+
+.videoDescription h3 {
+  font-size: clamp(1.25rem, 2vw, 1.7rem);
+}
+
+.videoDescription p {
+  margin: 7px auto 0;
+  color: #4b5563;
+  line-height: 1.6;
+}
+
+.showcaseGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: 24px;
+  row-gap: 28px;
+  margin-top: 44px;
+}
+
+.showcaseCard {
+  position: relative;
+  overflow: hidden;
+  margin: 0;
+  padding: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  border-radius: 20px;
+  background: rgba(247, 247, 247, 0.4);
+  box-shadow: 0 14px 34px rgba(23, 23, 23, 0.09), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(20px) saturate(135%);
+  -webkit-backdrop-filter: blur(20px) saturate(135%);
+}
+
+.showcaseCard img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 13px;
+  transition: transform 500ms cubic-bezier(0.2, 0.8, 0.2, 1), filter 300ms ease;
+}
+
+.showcaseCard figcaption {
+  min-height: 124px;
+  padding: 16px 13px 12px;
+}
+
+.showcaseCard h3 {
+  margin-top: 6px;
+  font-size: 1.08rem;
+}
+
+.showcaseCard figcaption p {
+  margin: 6px 0 0;
+  color: #4b5563;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.showcaseCard:hover {
+  transform: translateY(-6px);
+  border-color: rgba(245, 164, 0, 0.5);
+  box-shadow: 0 24px 56px rgba(23, 23, 23, 0.16), 0 0 32px rgba(245, 164, 0, 0.12);
+}
+
+.showcaseCard:hover img {
+  transform: scale(1.035);
+  filter: saturate(1.08) contrast(1.02);
+}
+
+@media (max-width: 900px) {
+  .showcaseGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .videoGlass {
+    padding: 8px;
+    border-radius: 20px;
+  }
+
+  .videoFrame {
+    border-radius: 14px;
+  }
+
+  .videoDescription {
+    padding: 20px 12px 14px;
+  }
+
+  .showcaseGrid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .showcaseCard,
+  .showcaseCard img {
     transition: none;
   }
 }
