@@ -12,6 +12,7 @@ const elements = {
   documentList: document.querySelector("#documentList"),
   documentsStatus: document.querySelector("#documentsStatus"),
   historyList: document.querySelector("#historyList"),
+  homeButton: document.querySelector("#homeButton"),
   knowledgeFile: document.querySelector("#knowledgeFile"),
   knowledgeStatus: document.querySelector("#knowledgeStatus"),
   liveTranscript: document.querySelector("#liveTranscript"),
@@ -28,48 +29,79 @@ const elements = {
   stopMeetingAudio: document.querySelector("#stopMeetingAudio"),
   stopListening: document.querySelector("#stopListening"),
   stopRecording: document.querySelector("#stopRecording"),
-  listeningStatus: document.querySelector("#listeningStatus")
+  listeningStatus: document.querySelector("#listeningStatus"),
+  trialTimer: document.querySelector("#trialTimer")
 };
 
 const STORAGE_KEYS = {
   apiBaseUrl: "orbynecue.apiBaseUrl",
+  demoAuthenticated: "orbynecue.demoAuthenticated",
   documents: "orbynecue.documents",
   history: "orbynecue.history",
   messages: "orbynecue.messages",
   meetingContext: "orbynecue.meetingContext"
 };
 
+const DEMO_CREDENTIALS = {
+  email: "demo@orbynecue.com",
+  password: "Demo@123"
+};
+
 const DEFAULT_LOCAL_BACKEND_URL = "http://127.0.0.1:8000";
 const DOCUMENT_MATCH_THRESHOLD = 40;
 const MAX_LOCAL_ANSWER_WORDS = 180;
-const MAX_CONTEXT_WORDS = 520;
-const AI_REQUEST_TIMEOUT_MS = 45000;
-const MEETING_AUDIO_SEGMENT_MS = 3000;
-const MEETING_AUDIO_FIRST_CHUNK_MS = 1200;
-const MEETING_RECORDER_RESTART_DELAY_MS = 250;
-const MEETING_AUTO_ANSWER_COOLDOWN_MS = 6000;
-const MEETING_QUESTION_SETTLE_MS = 4500;
+const MEETING_AUDIO_SEGMENT_MS = 1000;
+const MEETING_AUDIO_FIRST_CHUNK_MS = 750;
+const MEETING_AUDIO_OVERLAP_MS = 0;
+const MEETING_AUDIO_TARGET_SAMPLE_RATE = 16000;
+const MEETING_AUDIO_PROCESSOR_SIZE = 4096;
+const MEETING_AUDIO_RMS_THRESHOLD = 0.0008;
+const MEETING_MIN_SPEECH_SECONDS_PER_CHUNK = 0.01;
 const MIN_MEETING_AUTO_ANSWER_WORDS = 5;
+const RECENT_TRANSCRIPT_CACHE_LIMIT = 128;
+const TRIAL_DURATION_MS = 60 * 60 * 1000;
+const MAX_CONSECUTIVE_SILENT_UPLOADS = 2;
+const INSUFFICIENT_DOCUMENT_ANSWER = "No relevant information found in the uploaded documents.";
+const PERF_TARGETS_MS = {
+  vadMs: 100,
+  speechToTextMs: 1500,
+  documentRetrievalMs: 200,
+  llmGenerationMs: 1500,
+  totalSinceQuestionEndMs: 4000
+};
 
 let documents = [];
+let documentSearchIndex = [];
+let documentSearchIndexDirty = true;
 let history = [];
-let lastMeetingAnswerAt = 0;
 let lastMeetingAnswerText = "";
-let pendingMeetingAnswerSegments = [];
-let pendingMeetingAnswerText = "";
-let pendingMeetingAnswerTimer = null;
 let meetingAudioContext = null;
 let meetingAudioLevelTimer = null;
-let meetingAudioRequestTimer = null;
-let discardMeetingAudioChunks = false;
-let meetingAudioRecorder = null;
+let meetingAudioSourceNode = null;
+let meetingAudioProcessorNode = null;
+let meetingAudioMutedOutputNode = null;
+let meetingAudioChunkBuffers = [];
+let meetingAudioChunkSamples = 0;
+let meetingAudioChunkNumber = 0;
+let meetingAudioSessionId = "";
+let meetingAudioChunkProcessing = false;
+let meetingAudioSpeechSamplesSinceLastChunk = 0;
 let meetingAudioShared = false;
 let meetingSharedAudioStream = null;
+let meetingAudioActiveRecently = false;
+let meetingAudioPeakSinceLastChunk = 0;
+let meetingAudioDebugLog = [];
+let meetingSilentChunkCount = 0;
+let meetingLastChunkAt = 0;
+let meetingProcessorWatchdogTimer = null;
+let meetingCurrentInputStream = null;
+let meetingCurrentInputMode = "shared";
 let meetingAudioStream = null;
 let meetingMicStream = null;
 let micRecorder = null;
 let micRecordingParts = [];
 let pendingTranscriptions = new Set();
+let transcriptionPausedUntil = 0;
 let messages = [];
 let processingCount = 0;
 let meetingListening = false;
@@ -78,6 +110,8 @@ let meetingRecorderGeneration = 0;
 let meetingTranscript = [];
 let displayedMeetingTranscript = [];
 let currentRecordingUrl = "";
+let recentTranscriptHashes = [];
+let recentDisplayedTranscriptHashes = [];
 
 function getApiBaseUrl() {
   const configured = localStorage.getItem(STORAGE_KEYS.apiBaseUrl) || window.ORBYNE_API_BASE_URL || "";
@@ -125,7 +159,9 @@ function updateAudioStatus() {
   elements.stopListening.disabled = !meetingListening;
   elements.startRecording.disabled = meetingRecording;
   elements.stopRecording.disabled = !meetingRecording;
-  elements.audioLanguage.disabled = meetingListening;
+  if (elements.audioLanguage) {
+    elements.audioLanguage.disabled = meetingListening;
+  }
 }
 
 function updateDocumentStatus() {
@@ -212,6 +248,52 @@ function tokenize(text) {
     .filter((word) => word.length > 2);
 }
 
+function cleanTranscript(text) {
+  let cleanText = String(text || "");
+  cleanText = cleanText.replace(/\[[^\]]+\]|\([^\)]+\)/g, " ");
+  cleanText = cleanText.replace(/\b(?:um+|uh+|ah+|erm|hmm|you know|like|okay|right)\b/gi, " ");
+  cleanText = cleanText.replace(/\b(\w+)(?:\s+\1\b)+/gi, "$1");
+  cleanText = cleanText.replace(/\b(\w+\s+\w+)(?:\s+\1\b)+/gi, "$1");
+  cleanText = cleanText.replace(/\s+/g, " ").replace(/^[\s.,;:-]+|[\s.,;:-]+$/g, "");
+  if (text.trim().endsWith("?") && !cleanText.endsWith("?")) {
+    cleanText += "?";
+  }
+  return cleanText;
+}
+
+function transcriptHash(text) {
+  let hash = 5381;
+  const normalized = normalizedTranscriptKey(text);
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash = ((hash << 5) + hash) ^ normalized.charCodeAt(index);
+  }
+  return String(hash >>> 0);
+}
+
+function hasRecentlyProcessedTranscript(text) {
+  const hash = transcriptHash(text);
+  if (recentTranscriptHashes.includes(hash)) {
+    recentTranscriptHashes = recentTranscriptHashes.filter((item) => item !== hash);
+    recentTranscriptHashes.push(hash);
+    return true;
+  }
+  recentTranscriptHashes.push(hash);
+  recentTranscriptHashes = recentTranscriptHashes.slice(-RECENT_TRANSCRIPT_CACHE_LIMIT);
+  return false;
+}
+
+function hasRecentlyDisplayedTranscript(text) {
+  const hash = transcriptHash(text);
+  if (recentDisplayedTranscriptHashes.includes(hash)) {
+    recentDisplayedTranscriptHashes = recentDisplayedTranscriptHashes.filter((item) => item !== hash);
+    recentDisplayedTranscriptHashes.push(hash);
+    return true;
+  }
+  recentDisplayedTranscriptHashes.push(hash);
+  recentDisplayedTranscriptHashes = recentDisplayedTranscriptHashes.slice(-RECENT_TRANSCRIPT_CACHE_LIMIT);
+  return false;
+}
+
 function compactText(text, maxWords = MAX_LOCAL_ANSWER_WORDS) {
   const words = text.split(/\s+/).filter(Boolean);
   if (words.length <= maxWords) {
@@ -253,14 +335,48 @@ function scoreChunk(questionWords, chunk) {
   return hits / Math.max(questionWords.length, 1);
 }
 
+function scoreIndexedChunk(questionWords, chunkWords) {
+  let hits = 0;
+  for (const word of questionWords) {
+    if (chunkWords.has(word)) {
+      hits += 1;
+    }
+  }
+  return hits / Math.max(questionWords.length, 1);
+}
+
+function normalizeChunkEntry(chunk, doc) {
+  if (typeof chunk === "string") {
+    return { chunk, filename: doc.name, page: null };
+  }
+  return {
+    chunk: chunk.text || "",
+    filename: chunk.filename || doc.name,
+    page: chunk.page ?? null
+  };
+}
+
 function getAllChunks() {
-  return documents.flatMap((doc) => (doc.chunks || []).map((chunk) => ({ chunk, filename: doc.name })));
+  if (!documentSearchIndexDirty) {
+    return documentSearchIndex;
+  }
+  documentSearchIndex = documents
+    .filter((doc) => doc.status === "Loaded")
+    .flatMap((doc) => (doc.chunks || []).map((chunk) => {
+      const entry = normalizeChunkEntry(chunk, doc);
+      return {
+        ...entry,
+        tokenSet: new Set(tokenize(entry.chunk))
+      };
+    }));
+  documentSearchIndexDirty = false;
+  return documentSearchIndex;
 }
 
 function getBestChunks(question, count = 4) {
   const questionWords = tokenize(question);
   return getAllChunks()
-    .map((entry) => ({ ...entry, score: scoreChunk(questionWords, entry.chunk) }))
+    .map((entry) => ({ ...entry, score: scoreIndexedChunk(questionWords, entry.tokenSet) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, count);
 }
@@ -316,7 +432,7 @@ function localAnswer(question, scoredChunks) {
   }
 
   const section = extractAnswerSection(question, bestMatch.chunk);
-  return `1. **Complete Answer**:\n${section}`;
+  return section ? `1. **Complete Answer**:\n${section}` : INSUFFICIENT_DOCUMENT_ANSWER;
 }
 
 function hasDocumentAnswer(matches) {
@@ -354,6 +470,7 @@ function saveMessages() {
 }
 
 function saveDocuments() {
+  documentSearchIndexDirty = true;
   localStorage.setItem(STORAGE_KEYS.documents, JSON.stringify(documents));
 }
 
@@ -503,68 +620,17 @@ function renderDocuments() {
   updateDocumentStatus();
 }
 
-async function callAi(question) {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS);
-  let response;
-
-  try {
-    response = await fetch(apiUrl("/answer"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ question }),
-      signal: controller.signal
-    });
-  } catch (error) {
-    if (error.name === "AbortError") {
-      throw new Error("Answer request timed out. Check that Ollama is running or configure Gemini.");
-    }
-    throw error;
-  } finally {
-    window.clearTimeout(timeout);
-  }
-
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const message = payload.detail || `Backend request failed with ${response.status}`;
-    const error = new Error(message);
-    error.status = response.status;
-    throw error;
-  }
-
-  if (!payload.answer) {
-    throw new Error("Backend returned an empty answer.");
-  }
-
-  return payload;
-}
-
-function buildContextualQuestion(question, matches) {
-  const contextParts = [];
-  const recentMeeting = meetingTranscript.slice(-6).join(" ");
-  if (recentMeeting) {
-    contextParts.push(`Meeting audio context:\n${compactText(recentMeeting, MAX_CONTEXT_WORDS)}`);
-  }
-
-  if (matches.length) {
-    const documentContext = matches
-      .map((match) => `${match.filename}: ${compactText(match.chunk, 120)}`)
-      .join("\n\n");
-    contextParts.push(`Uploaded document context:\n${documentContext}`);
-  }
-
-  if (!contextParts.length) {
-    return question;
-  }
-
-  return `${contextParts.join("\n\n")}\n\nUser question:\n${question}\n\nWhen uploaded document context is relevant, return only one answer from the best matching document section and keep it point-wise as written in the document. Otherwise answer using the meeting audio context.`;
-}
-
 async function answerQuestion(question, options = {}) {
-  const trimmed = question.trim();
+  const answerStartedAt = performance.now();
+  const pipelineTimings = options.pipelineTimings || {};
+  const trimmed = cleanTranscript(question);
   if (!trimmed) {
+    return;
+  }
+  if (options.fromMeetingAudio && hasRecentlyProcessedTranscript(trimmed)) {
+    return;
+  }
+  if (options.fromMeetingAudio && !options.validatedMeetingQuestion && !shouldAnswerMeetingTranscript(trimmed)) {
     return;
   }
 
@@ -573,27 +639,97 @@ async function answerQuestion(question, options = {}) {
     : startCurrentQuestion(trimmed, contextLabel()).assistantMessageId;
   setProcessing(true);
 
+  const retrievalStartedAt = performance.now();
+  if (options.fromMeetingAudio) {
+    setMeetingAudioStatus("Searching documents...");
+  }
   const matches = getBestChunks(trimmed);
+  const retrievalMs = performance.now() - retrievalStartedAt;
   const confidence = matches.length ? Math.round(matches[0].score * 10000) / 100 : 0;
+  if (options.fromMeetingAudio) {
+    logAudioStage({
+      stage: "retrieval",
+      chunkNumber: options.chunkNumber || 0,
+      transcript: trimmed,
+      retrievalScore: confidence,
+      questionDetected: true,
+      retrievalMs: Math.round(retrievalMs),
+      topK: matches.length
+    });
+  }
 
   try {
-    if (matches.length && confidence > DOCUMENT_MATCH_THRESHOLD) {
+    if (matches.length && confidence >= DOCUMENT_MATCH_THRESHOLD) {
       const answer = localAnswer(trimmed, matches);
-      updateMessage(assistantMessageId, answer, options.meta || `Documents | Match: ${confidence}%`);
+      const bestMatch = matches[0];
+      const pageLabel = bestMatch.page ? ` | Page: ${bestMatch.page}` : "";
+      const transcriptConfidenceLabel = options.transcriptConfidence != null ? ` | Confidence: ${options.transcriptConfidence}%` : "";
+      updateMessage(assistantMessageId, answer, options.meta || `Source: Document | Similarity: ${confidence}%${transcriptConfidenceLabel} | ${bestMatch.filename}${pageLabel}`);
+      if (options.fromMeetingAudio) {
+        setMeetingAudioStatus(`Document match: ${confidence}%`);
+        logPerformance("audio-to-answer", {
+          chunk: options.chunkNumber || 0,
+          audioCaptureMs: pipelineTimings.captureMs,
+          vadMs: pipelineTimings.vadMs,
+          languageDetectionMs: pipelineTimings.languageDetectionMs,
+          speechToTextMs: pipelineTimings.speechToTextMs || pipelineTimings.transcriptionLatencyMs,
+          documentRetrievalMs: retrievalMs,
+          llmGenerationMs: 0,
+          totalSinceQuestionEndMs: performance.now() - (pipelineTimings.questionEndedAt || answerStartedAt)
+        });
+        logAudioStage({
+          stage: "answer",
+          chunkNumber: options.chunkNumber || 0,
+          retrievalScore: confidence,
+          answerSource: "Document",
+          document: bestMatch.filename,
+          page: bestMatch.page || null,
+          retrievalMs: Math.round(retrievalMs),
+          totalMs: Math.round(performance.now() - (pipelineTimings.questionEndedAt || answerStartedAt))
+        });
+      }
       if (!options.silentUserMessage) {
-        addHistory(trimmed, `Document match ${confidence}%`);
+        addHistory(trimmed, `Document ${confidence}%`);
       }
       return;
     }
 
-    const result = await callAi(buildContextualQuestion(trimmed, matches));
-    updateMessage(assistantMessageId, result.answer, options.meta || contextLabel());
-    addHistory(options.historyQuestion || trimmed, result.model);
+    if (options.fromMeetingAudio) {
+      updateMessage(assistantMessageId, INSUFFICIENT_DOCUMENT_ANSWER, options.meta || `Source: Documents | Similarity: ${confidence}%`);
+      setMeetingAudioStatus("No relevant document match.");
+      logPerformance("audio-to-answer", {
+        chunk: options.chunkNumber || 0,
+        audioCaptureMs: pipelineTimings.captureMs,
+        vadMs: pipelineTimings.vadMs,
+        languageDetectionMs: pipelineTimings.languageDetectionMs,
+        speechToTextMs: pipelineTimings.speechToTextMs || pipelineTimings.transcriptionLatencyMs,
+        documentRetrievalMs: retrievalMs,
+        llmGenerationMs: 0,
+        totalSinceQuestionEndMs: performance.now() - (pipelineTimings.questionEndedAt || answerStartedAt)
+      });
+      logAudioStage({
+        stage: "answer",
+        chunkNumber: options.chunkNumber || 0,
+        retrievalScore: confidence,
+        answerSource: "Documents",
+        reason: "no_relevant_document_match",
+        retrievalMs: Math.round(retrievalMs),
+        llmMs: 0,
+        totalMs: Math.round(performance.now() - (pipelineTimings.questionEndedAt || answerStartedAt))
+      });
+      addHistory(options.historyQuestion || trimmed, "Documents");
+      return;
+    }
+
+    updateMessage(assistantMessageId, INSUFFICIENT_DOCUMENT_ANSWER, options.meta || `Source: Documents | Similarity: ${confidence}%`);
+    addHistory(options.historyQuestion || trimmed, "Documents");
   } catch (error) {
-    if (hasDocumentAnswer(matches)) {
+    if (matches.length && confidence >= DOCUMENT_MATCH_THRESHOLD && hasDocumentAnswer(matches)) {
       const answer = localAnswer(trimmed, matches);
-      updateMessage(assistantMessageId, answer, options.meta || `Documents | Match: ${confidence}%`);
-      addHistory(options.historyQuestion || trimmed, `Document fallback ${confidence}%`);
+      const bestMatch = matches[0];
+      const pageLabel = bestMatch.page ? ` | Page: ${bestMatch.page}` : "";
+      updateMessage(assistantMessageId, answer, options.meta || `Source: Document | Similarity: ${confidence}% | ${bestMatch.filename}${pageLabel}`);
+      addHistory(options.historyQuestion || trimmed, `Document ${confidence}%`);
       return;
     }
 
@@ -663,11 +799,133 @@ function getSupportedAudioMimeType() {
 }
 
 function getAudioFileName(mimeType) {
+  if (mimeType.includes("wav")) {
+    return "meeting-audio.wav";
+  }
   return mimeType.includes("mp4") ? "meeting-audio.mp4" : "meeting-audio.webm";
 }
 
 function getSelectedAudioLanguage() {
-  return elements.audioLanguage?.value || "auto";
+  return "en";
+}
+
+function createMeetingAudioSessionId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+  return `meeting-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function logAudioStage(entry) {
+  const enriched = {
+    at: new Date().toISOString(),
+    ...entry
+  };
+  meetingAudioDebugLog.push(enriched);
+  meetingAudioDebugLog = meetingAudioDebugLog.slice(-300);
+  window.ORBYNE_AUDIO_DEBUG = meetingAudioDebugLog;
+  console.info("[ORBYNECUE audio]", enriched);
+}
+
+function logPerformance(label, timings = {}) {
+  const cleaned = Object.fromEntries(
+    Object.entries(timings)
+      .filter(([, value]) => value != null)
+      .map(([key, value]) => [key, typeof value === "number" ? Math.round(value) : value])
+  );
+  console.info(`[ORBYNECUE perf] ${label}`, cleaned);
+  for (const [key, target] of Object.entries(PERF_TARGETS_MS)) {
+    if (typeof cleaned[key] === "number" && cleaned[key] > target) {
+      console.warn(`[ORBYNECUE perf bottleneck] ${key} exceeded ${target}ms`, cleaned);
+    }
+  }
+}
+
+function mergeFloat32Buffers(buffers, totalSamples) {
+  const merged = new Float32Array(totalSamples);
+  let offset = 0;
+  for (const buffer of buffers) {
+    merged.set(buffer, offset);
+    offset += buffer.length;
+  }
+  return merged;
+}
+
+function mixInputBufferToMono(inputBuffer) {
+  const channels = inputBuffer.numberOfChannels || 1;
+  const length = inputBuffer.length;
+  const mono = new Float32Array(length);
+  for (let channel = 0; channel < channels; channel += 1) {
+    const data = inputBuffer.getChannelData(channel);
+    for (let index = 0; index < length; index += 1) {
+      mono[index] += data[index] / channels;
+    }
+  }
+  return mono;
+}
+
+function calculateRms(samples) {
+  if (!samples.length) {
+    return 0;
+  }
+  let sum = 0;
+  for (const sample of samples) {
+    sum += sample * sample;
+  }
+  return Math.sqrt(sum / samples.length);
+}
+
+function resampleLinear(samples, fromSampleRate, toSampleRate) {
+  if (fromSampleRate === toSampleRate) {
+    return samples;
+  }
+  const ratio = fromSampleRate / toSampleRate;
+  const newLength = Math.max(1, Math.round(samples.length / ratio));
+  const result = new Float32Array(newLength);
+  for (let index = 0; index < newLength; index += 1) {
+    const sourceIndex = index * ratio;
+    const before = Math.floor(sourceIndex);
+    const after = Math.min(before + 1, samples.length - 1);
+    const weight = sourceIndex - before;
+    result[index] = samples[before] * (1 - weight) + samples[after] * weight;
+  }
+  return result;
+}
+
+function encodeWavPcm16(samples, sampleRate) {
+  const bytesPerSample = 2;
+  const dataSize = samples.length * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  function writeString(offset, value) {
+    for (let index = 0; index < value.length; index += 1) {
+      view.setUint8(offset + index, value.charCodeAt(index));
+    }
+  }
+
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * bytesPerSample, true);
+  view.setUint16(32, bytesPerSample, true);
+  view.setUint16(34, 16, true);
+  writeString(36, "data");
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (const sample of samples) {
+    const clamped = Math.max(-1, Math.min(1, sample));
+    view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
+    offset += 2;
+  }
+
+  return new Blob([buffer], { type: "audio/wav" });
 }
 
 function compactTranscriptForAnalysis(text, maxCharacters = 14000) {
@@ -679,70 +937,45 @@ function compactTranscriptForAnalysis(text, maxCharacters = 14000) {
 }
 
 function shouldAnswerMeetingTranscript(text) {
-  const cleanText = text.trim();
+  const cleanText = cleanTranscript(text);
   const words = tokenize(cleanText);
   const questionLike = /\b(what|why|how|when|where|who|which|can|could|would|should|do|does|did|is|are|was|were|will|shall|tell|explain)\b/i.test(cleanText);
-  return cleanText.endsWith("?") || questionLike || words.length >= MIN_MEETING_AUTO_ANSWER_WORDS;
+  const fillerOnly = /^(hi|hello|hey|thanks|thank you|yeah|yes|no|ok|okay|sure|great|fine|cool|nice to meet you)\.?$/i.test(cleanText)
+    || /^(my name is|i am|i'm|this is)\b/i.test(cleanText);
+  return !fillerOnly && words.length >= 3 && (cleanText.endsWith("?") || questionLike || words.length >= MIN_MEETING_AUTO_ANSWER_WORDS);
 }
 
-function cancelScheduledMeetingAnswer() {
-  if (pendingMeetingAnswerTimer) {
-    window.clearTimeout(pendingMeetingAnswerTimer);
-    pendingMeetingAnswerTimer = null;
-  }
-}
-
-async function answerPendingMeetingTranscript() {
-  pendingMeetingAnswerTimer = null;
-  const answeredSegments = pendingMeetingAnswerSegments;
-  const cleanTranscript = pendingMeetingAnswerText.replace(/\s+/g, " ").trim();
-  pendingMeetingAnswerSegments = [];
-  pendingMeetingAnswerText = "";
-
-  if (!shouldAnswerMeetingTranscript(cleanTranscript)) {
-    return;
-  }
-
-  const now = Date.now();
-  const normalized = cleanTranscript.toLowerCase();
-  if (normalized === lastMeetingAnswerText) {
-    return;
-  }
-  if (now - lastMeetingAnswerAt < MEETING_AUTO_ANSWER_COOLDOWN_MS) {
-    return;
-  }
-
-  lastMeetingAnswerAt = now;
-  lastMeetingAnswerText = normalized;
-  await answerQuestion(cleanTranscript);
-  removeAnsweredMeetingSegments(answeredSegments);
-  renderLiveTranscript();
-}
-
-function scheduleMeetingTranscriptAnswer(transcript) {
-  const cleanTranscript = transcript.trim();
-  if (!cleanTranscript) {
-    return;
-  }
-
-  pendingMeetingAnswerText = `${pendingMeetingAnswerText} ${cleanTranscript}`.trim();
-  pendingMeetingAnswerSegments.push(cleanTranscript);
-  cancelScheduledMeetingAnswer();
-  pendingMeetingAnswerTimer = window.setTimeout(() => {
-    answerPendingMeetingTranscript();
-  }, MEETING_QUESTION_SETTLE_MS);
-}
-
-async function sendMeetingAudioChunk(blob) {
+async function sendMeetingAudioChunk(blob, meta = {}) {
   if (!blob.size) {
     return;
   }
+
+  const uploadStartedAt = performance.now();
+  logAudioStage({
+    stage: "upload",
+    chunkNumber: meta.chunkNumber || 0,
+    audioReceived: true,
+    chunkSize: blob.size,
+    duration: meta.duration || 0,
+    sampleRate: meta.sampleRate || 0,
+    audioEnergy: meta.audioEnergy || 0,
+    voiceActivity: meta.voiceActivity !== false,
+    flow: "Shared Audio -> Speech-to-Text -> Document Search -> Answer"
+  });
 
   setProcessing(true);
   try {
     const formData = new FormData();
     formData.append("file", blob, getAudioFileName(blob.type || ""));
     formData.append("language", getSelectedAudioLanguage());
+    formData.append("chunk_number", String(meta.chunkNumber || 0));
+    formData.append("session_id", meta.sessionId || meetingAudioSessionId || "");
+    formData.append("final_chunk", String(meta.finalChunk === true));
+    formData.append("duration", String(meta.duration || 0));
+    formData.append("sample_rate", String(meta.sampleRate || 0));
+    formData.append("audio_energy", String(meta.audioEnergy || 0));
+    formData.append("voice_activity", String(meta.voiceActivity !== false));
+    setMeetingAudioStatus("Speech detected. Converting to text...");
     const response = await fetch(apiUrl("/transcribe-audio"), {
       method: "POST",
       body: formData
@@ -755,23 +988,87 @@ async function sendMeetingAudioChunk(blob) {
     }
 
     const transcript = (payload.transcript || "").trim();
+    const backendTimings = payload.stageTimings || {};
+    logAudioStage({
+      stage: "backend-result",
+      chunkNumber: payload.chunkNumber || meta.chunkNumber || 0,
+      audioReceived: true,
+      chunkSize: payload.chunkSize || blob.size,
+      duration: payload.duration || meta.duration || 0,
+      sampleRate: payload.sampleRate || meta.sampleRate || 0,
+      audioEnergy: payload.audioEnergy ?? meta.audioEnergy ?? 0,
+      voiceActivity: payload.voiceActivity ?? meta.voiceActivity ?? false,
+      detectedLanguage: payload.language || "unknown",
+      languageConfidence: payload.languageConfidence || 0,
+      transcript,
+      transcriptConfidence: payload.transcriptionConfidence || 0,
+      answerSource: "",
+      latency: payload.latencyMs || 0,
+      stageTimings: backendTimings,
+      discarded: payload.discarded || false,
+      reason: payload.reason || ""
+    });
+    logPerformance("audio-to-transcript", {
+      chunk: payload.chunkNumber || meta.chunkNumber || 0,
+      captureMs: meta.captureMs || Math.round((meta.duration || 0) * 1000),
+      vadMs: meta.vadMs || 0,
+      uploadRoundTripMs: performance.now() - uploadStartedAt,
+      languageDetectionMs: backendTimings.languageDetectionMs,
+      speechToTextMs: backendTimings.speechToTextMs,
+      totalBackendMs: payload.latencyMs || 0
+    });
+
+    if (payload.discarded) {
+      if (payload.reason === "low_transcription_confidence") {
+        setMeetingAudioStatus(`STT ignored unclear speech (${Math.round((payload.transcriptionConfidence || 0) * 100)}%)`);
+      } else if (payload.reason === "no_clear_speech") {
+        setMeetingAudioStatus("STT heard audio but found no clear words");
+      } else if (payload.reason === "implausible_transcript") {
+        setMeetingAudioStatus("STT rejected an uncertain transcript");
+      } else {
+        setMeetingAudioStatus(`STT skipped audio: ${payload.reason || "unknown reason"}`);
+      }
+      return;
+    }
+
     if (transcript) {
-      if (!meetingRecording) {
+      setMeetingAudioStatus("Text ready. Searching documents...");
+      const duplicateDisplay = hasRecentlyDisplayedTranscript(transcript);
+      if (!meetingRecording && !duplicateDisplay) {
         displayedMeetingTranscript.push(transcript);
         displayedMeetingTranscript = displayedMeetingTranscript.slice(-20);
         renderLiveTranscript();
       }
-      meetingTranscript.push(transcript);
-      meetingTranscript = meetingTranscript.slice(-20);
-      saveMeetingContext();
-      if (!meetingRecording) {
-        scheduleMeetingTranscriptAnswer(transcript);
+      if (!duplicateDisplay) {
+        meetingTranscript.push(transcript);
+        meetingTranscript = meetingTranscript.slice(-20);
+        saveMeetingContext();
+      }
+      const normalized = transcript.toLowerCase();
+      if (!meetingRecording && normalized !== lastMeetingAnswerText) {
+        lastMeetingAnswerText = normalized;
+        await answerQuestion(transcript, {
+          fromMeetingAudio: true,
+          validatedMeetingQuestion: true,
+          transcriptConfidence: Math.round((payload.transcriptionConfidence || 0) * 100),
+          chunkNumber: payload.chunkNumber || meta.chunkNumber || 0,
+          pipelineTimings: {
+            questionEndedAt: meta.questionEndedAt || uploadStartedAt,
+            transcriptionLatencyMs: performance.now() - uploadStartedAt,
+            speechToTextMs: backendTimings.speechToTextMs,
+            languageDetectionMs: 0
+          }
+        });
+        removeAnsweredMeetingSegments([transcript]);
+        renderLiveTranscript();
       }
     }
   } catch (error) {
     if (error.status === 429) {
+      transcriptionPausedUntil = Date.now() + 30000;
       setMeetingAudioStatus(meetingListening ? "Listening... transcription paused" : "Audio shared");
     } else {
+      setMeetingAudioStatus(`STT error: ${error.message}`);
       startCurrentAnswer(`Meeting audio error: ${error.message}`, "Error");
     }
   } finally {
@@ -803,13 +1100,17 @@ function startMeetingAudioMeter(stream) {
     const level = Math.min(rms * 8, 1);
     setMeetingAudioLevel(level);
 
-    if (rms > 0.018) {
+    meetingAudioPeakSinceLastChunk = Math.max(meetingAudioPeakSinceLastChunk, rms);
+
+    if (rms > MEETING_AUDIO_RMS_THRESHOLD) {
       silentTicks = 0;
+      meetingAudioActiveRecently = true;
       setMeetingAudioStatus(meetingListening ? "Listening..." : "Audio shared");
     } else {
       silentTicks += 1;
       if (silentTicks >= 8) {
-        setMeetingAudioStatus(meetingListening ? "Listening... no audio detected" : "Shared, no audio detected");
+        meetingAudioActiveRecently = false;
+        setMeetingAudioStatus(meetingListening ? "Listening... checking shared audio" : "Audio shared, waiting for speech");
       }
     }
   }, 500);
@@ -820,48 +1121,224 @@ function stopMeetingAudioMeter() {
     window.clearInterval(meetingAudioLevelTimer);
     meetingAudioLevelTimer = null;
   }
+  if (meetingAudioProcessorNode) {
+    meetingAudioProcessorNode.disconnect();
+    meetingAudioProcessorNode = null;
+  }
+  if (meetingAudioMutedOutputNode) {
+    meetingAudioMutedOutputNode.disconnect();
+    meetingAudioMutedOutputNode = null;
+  }
+  if (meetingAudioSourceNode) {
+    meetingAudioSourceNode.disconnect();
+    meetingAudioSourceNode = null;
+  }
   if (meetingAudioContext) {
     meetingAudioContext.close();
     meetingAudioContext = null;
   }
   setMeetingAudioLevel(0);
+  meetingAudioActiveRecently = false;
+  meetingAudioSpeechSamplesSinceLastChunk = 0;
+  meetingAudioPeakSinceLastChunk = 0;
+  meetingSilentChunkCount = 0;
 }
 
-function stopMeetingAudioRequestTimer() {
-  if (meetingAudioRequestTimer) {
-    window.clearInterval(meetingAudioRequestTimer);
-    meetingAudioRequestTimer = null;
-  }
-}
-
-function requestMeetingAudioData(recorder, recorderGeneration) {
-  if (!meetingListening || recorderGeneration !== meetingRecorderGeneration) {
-    stopMeetingAudioRequestTimer();
+async function processSharedAudioChunk() {
+  if (meetingAudioChunkProcessing || !meetingListening || !meetingAudioChunkSamples) {
     return;
   }
-  if (recorder.state === "recording") {
-    try {
-      recorder.requestData();
-    } catch (error) {
-      setMeetingAudioStatus("Listening... restarting audio");
-      try {
-        recorder.stop();
-      } catch (stopError) {
-        recordNextMeetingAudioSegment();
+  meetingAudioChunkProcessing = true;
+  try {
+    meetingLastChunkAt = Date.now();
+    const vadStartedAt = performance.now();
+
+    const sourceSampleRate = meetingAudioContext?.sampleRate || 0;
+    const samples = mergeFloat32Buffers(meetingAudioChunkBuffers, meetingAudioChunkSamples);
+    const overlapSamples = sourceSampleRate ? Math.min(samples.length, Math.round(sourceSampleRate * (MEETING_AUDIO_OVERLAP_MS / 1000))) : 0;
+    const overlapBuffer = overlapSamples ? samples.slice(samples.length - overlapSamples) : null;
+    meetingAudioChunkBuffers = overlapBuffer ? [overlapBuffer] : [];
+    meetingAudioChunkSamples = overlapBuffer ? overlapBuffer.length : 0;
+    meetingAudioChunkNumber += 1;
+
+    const duration = sourceSampleRate ? samples.length / sourceSampleRate : 0;
+    const rms = calculateRms(samples);
+    const speechSeconds = sourceSampleRate ? meetingAudioSpeechSamplesSinceLastChunk / sourceSampleRate : 0;
+    const peak = meetingAudioPeakSinceLastChunk;
+    meetingAudioSpeechSamplesSinceLastChunk = 0;
+    meetingAudioPeakSinceLastChunk = 0;
+
+    const probableVoiceActivity = peak >= MEETING_AUDIO_RMS_THRESHOLD
+      && speechSeconds >= MEETING_MIN_SPEECH_SECONDS_PER_CHUNK
+      && rms >= MEETING_AUDIO_RMS_THRESHOLD / 3;
+    const vadMs = performance.now() - vadStartedAt;
+    const baseLog = {
+      stage: "vad",
+      chunkNumber: meetingAudioChunkNumber,
+      audioReceived: true,
+      chunkSize: samples.length,
+      duration: Number(duration.toFixed(3)),
+      sampleRate: sourceSampleRate,
+      targetSampleRate: MEETING_AUDIO_TARGET_SAMPLE_RATE,
+      audioEnergy: Number(rms.toFixed(6)),
+      peak: Number(peak.toFixed(6)),
+      speechSeconds: Number(speechSeconds.toFixed(3)),
+      voiceActivity: probableVoiceActivity,
+      vadMs: Math.round(vadMs)
+    };
+    logAudioStage(baseLog);
+
+    if (!probableVoiceActivity) {
+      meetingSilentChunkCount += 1;
+      setMeetingAudioStatus(meetingSilentChunkCount >= 10 ? "Listening... checking shared audio" : "Listening... waiting for speech");
+      if (meetingSilentChunkCount > MAX_CONSECUTIVE_SILENT_UPLOADS) {
+        return;
       }
+    } else {
+      meetingSilentChunkCount = 0;
+      setMeetingAudioStatus("Speech detected...");
     }
+    if (Date.now() < transcriptionPausedUntil) {
+      setMeetingAudioStatus("Listening... transcription cooling down");
+      logAudioStage({
+        ...baseLog,
+        stage: "transcription-paused",
+        reason: "quota_cooldown"
+      });
+      return;
+    }
+
+    const resampled = resampleLinear(samples, sourceSampleRate, MEETING_AUDIO_TARGET_SAMPLE_RATE);
+    const wavBlob = encodeWavPcm16(resampled, MEETING_AUDIO_TARGET_SAMPLE_RATE);
+    const upload = sendMeetingAudioChunk(wavBlob, {
+      chunkNumber: meetingAudioChunkNumber,
+      sessionId: meetingAudioSessionId,
+      duration,
+      sampleRate: MEETING_AUDIO_TARGET_SAMPLE_RATE,
+      audioEnergy: rms,
+      voiceActivity: probableVoiceActivity,
+      captureMs: Math.round(duration * 1000),
+      vadMs,
+      questionEndedAt: performance.now()
+    });
+    pendingTranscriptions.add(upload);
+    upload.finally(() => pendingTranscriptions.delete(upload));
+  } finally {
+    meetingAudioChunkProcessing = false;
   }
+}
+
+function startProcessorWatchdog() {
+  stopProcessorWatchdog();
+  meetingLastChunkAt = Date.now();
+  meetingProcessorWatchdogTimer = window.setInterval(async () => {
+    if (!meetingListening || !meetingCurrentInputStream) {
+      return;
+    }
+    if (Date.now() - meetingLastChunkAt < 5000) {
+      return;
+    }
+    logAudioStage({
+      stage: "processor-watchdog-restart",
+      mode: meetingCurrentInputMode,
+      reason: "no_chunks_processed"
+    });
+    try {
+      await startSharedAudioProcessor(meetingCurrentInputStream, meetingCurrentInputMode);
+    } catch (error) {
+      setMeetingAudioStatus(`Audio processor restart failed: ${error.message}`);
+    }
+  }, 2500);
+}
+
+function stopProcessorWatchdog() {
+  if (meetingProcessorWatchdogTimer) {
+    window.clearInterval(meetingProcessorWatchdogTimer);
+    meetingProcessorWatchdogTimer = null;
+  }
+}
+
+async function startSharedAudioProcessor(stream = meetingSharedAudioStream, mode = "shared") {
+  stopMeetingAudioMeter();
+  meetingCurrentInputStream = stream;
+  meetingCurrentInputMode = mode;
+  const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+  meetingAudioContext = new AudioContextConstructor();
+  if (meetingAudioContext.state === "suspended") {
+    await meetingAudioContext.resume();
+  }
+  meetingAudioSourceNode = meetingAudioContext.createMediaStreamSource(stream);
+  meetingAudioProcessorNode = meetingAudioContext.createScriptProcessor(MEETING_AUDIO_PROCESSOR_SIZE, 2, 1);
+  meetingAudioMutedOutputNode = meetingAudioContext.createGain();
+  meetingAudioMutedOutputNode.gain.value = 0;
+
+  meetingAudioChunkBuffers = [];
+  meetingAudioChunkSamples = 0;
+  meetingAudioSpeechSamplesSinceLastChunk = 0;
+  meetingAudioPeakSinceLastChunk = 0;
+  meetingAudioChunkNumber = 0;
+  meetingSilentChunkCount = 0;
+  meetingAudioChunkProcessing = false;
+
+  const targetSamplesPerChunk = Math.round(meetingAudioContext.sampleRate * (MEETING_AUDIO_SEGMENT_MS / 1000));
+  const firstSpeechTargetSamples = Math.round(meetingAudioContext.sampleRate * (MEETING_AUDIO_FIRST_CHUNK_MS / 1000));
+  meetingAudioProcessorNode.onaudioprocess = (event) => {
+    if (!meetingListening) {
+      return;
+    }
+    const copy = mixInputBufferToMono(event.inputBuffer);
+    meetingAudioChunkBuffers.push(copy);
+    meetingAudioChunkSamples += copy.length;
+
+    const rms = calculateRms(copy);
+    meetingAudioPeakSinceLastChunk = Math.max(meetingAudioPeakSinceLastChunk, rms);
+    if (rms >= MEETING_AUDIO_RMS_THRESHOLD) {
+      meetingAudioSpeechSamplesSinceLastChunk += copy.length;
+      meetingAudioActiveRecently = true;
+      setMeetingAudioStatus("Listening...");
+    }
+    setMeetingAudioLevel(Math.min(rms * 8, 1));
+
+    const targetSamples = meetingAudioChunkNumber === 0 && meetingAudioSpeechSamplesSinceLastChunk
+      ? firstSpeechTargetSamples
+      : targetSamplesPerChunk;
+    if (meetingAudioChunkSamples >= targetSamples) {
+      processSharedAudioChunk();
+    }
+  };
+
+  meetingAudioSourceNode.connect(meetingAudioProcessorNode);
+  meetingAudioProcessorNode.connect(meetingAudioMutedOutputNode);
+  meetingAudioMutedOutputNode.connect(meetingAudioContext.destination);
+  setMeetingAudioStatus("Listening...");
+  logAudioStage({
+    stage: "capture-started",
+    mode,
+    sampleRate: meetingAudioContext.sampleRate,
+    targetSampleRate: MEETING_AUDIO_TARGET_SAMPLE_RATE,
+    chunkMs: MEETING_AUDIO_SEGMENT_MS,
+    audioTracks: stream.getAudioTracks().length,
+    audioContextState: meetingAudioContext.state
+  });
+  startProcessorWatchdog();
+}
+
+function stopSharedAudioProcessor() {
+  stopProcessorWatchdog();
+  if (meetingAudioChunkSamples) {
+    processSharedAudioChunk();
+  }
+  stopMeetingAudioMeter();
+  meetingCurrentInputStream = null;
 }
 
 function endSharedAudioSession(statusText = "Audio sharing ended") {
   meetingListening = false;
   meetingRecorderGeneration += 1;
-  stopMeetingAudioRequestTimer();
-  cancelScheduledMeetingAnswer();
-  pendingMeetingAnswerSegments = [];
-  pendingMeetingAnswerText = "";
+  stopSharedAudioProcessor();
   meetingAudioShared = false;
   meetingSharedAudioStream = null;
+  meetingAudioSessionId = "";
   if (meetingAudioStream) {
     meetingAudioStream.getTracks().forEach((track) => track.stop());
     meetingAudioStream = null;
@@ -872,91 +1349,9 @@ function endSharedAudioSession(statusText = "Audio sharing ended") {
   updateContextIndicator();
 }
 
-function recordNextMeetingAudioSegment() {
-  if (!meetingListening || !hasSharedAudioSession()) {
-    return;
-  }
-
-  const recorderGeneration = meetingRecorderGeneration;
-  if (!hasActiveSharedAudio()) {
-    setMeetingAudioStatus("Audio shared, waiting for audio");
-    window.setTimeout(() => {
-      if (meetingListening && recorderGeneration === meetingRecorderGeneration) {
-        recordNextMeetingAudioSegment();
-      }
-    }, 1000);
-    return;
-  }
-
-  const mimeType = getSupportedAudioMimeType();
-  let recorder;
-
-  try {
-    recorder = new MediaRecorder(meetingSharedAudioStream, mimeType ? { mimeType } : undefined);
-  } catch (error) {
-    setMeetingAudioStatus("Audio shared, recorder paused");
-    window.setTimeout(() => {
-      if (meetingListening && recorderGeneration === meetingRecorderGeneration) {
-        recordNextMeetingAudioSegment();
-      }
-    }, 1000);
-    return;
-  }
-
-  meetingAudioRecorder = recorder;
-  discardMeetingAudioChunks = false;
-  stopMeetingAudioRequestTimer();
-
-  recorder.addEventListener("dataavailable", (event) => {
-    if (discardMeetingAudioChunks || !event.data?.size) {
-      return;
-    }
-
-    const upload = sendMeetingAudioChunk(event.data);
-    pendingTranscriptions.add(upload);
-    upload.finally(() => pendingTranscriptions.delete(upload));
-  });
-
-  recorder.addEventListener("stop", () => {
-    stopMeetingAudioRequestTimer();
-    if (meetingAudioRecorder === recorder) {
-      meetingAudioRecorder = null;
-    }
-
-    if (meetingListening && recorderGeneration === meetingRecorderGeneration) {
-      setMeetingAudioStatus(hasActiveSharedAudio() ? "Listening..." : "Audio shared, waiting for audio");
-      window.setTimeout(recordNextMeetingAudioSegment, MEETING_RECORDER_RESTART_DELAY_MS);
-    }
-  });
-
-  recorder.addEventListener("error", () => {
-    if (meetingListening && recorderGeneration === meetingRecorderGeneration) {
-      stopMeetingAudioRequestTimer();
-      try {
-        if (recorder.state !== "inactive") {
-          recorder.stop();
-        }
-      } catch (error) {
-        recordNextMeetingAudioSegment();
-      }
-    }
-  });
-
-  recorder.start();
-  window.setTimeout(() => {
-    requestMeetingAudioData(recorder, recorderGeneration);
-  }, MEETING_AUDIO_FIRST_CHUNK_MS);
-  meetingAudioRequestTimer = window.setInterval(() => {
-    requestMeetingAudioData(recorder, recorderGeneration);
-  }, MEETING_AUDIO_SEGMENT_MS);
-}
-
 async function shareMeetingAudio() {
   if (!navigator.mediaDevices?.getDisplayMedia) {
     throw new Error("Meeting audio sharing needs Chrome or Edge screen/tab sharing.");
-  }
-  if (!window.MediaRecorder) {
-    throw new Error("This browser does not support MediaRecorder audio capture.");
   }
 
   meetingAudioStream = await navigator.mediaDevices.getDisplayMedia({
@@ -1025,7 +1420,7 @@ async function startRecordingSession() {
   updateContextIndicator();
 }
 
-function startListeningSession() {
+async function startListeningSession() {
   if (!hasSharedAudioSession()) {
     setMeetingAudioStatus("Share meeting audio first");
     updateAudioStatus();
@@ -1034,48 +1429,39 @@ function startListeningSession() {
   if (!hasActiveSharedAudio()) {
     setMeetingAudioStatus("Audio shared, waiting for audio");
   }
-  cancelScheduledMeetingAnswer();
-  pendingMeetingAnswerSegments = [];
-  pendingMeetingAnswerText = "";
+  transcriptionPausedUntil = 0;
   meetingListening = true;
+  meetingAudioSessionId = createMeetingAudioSessionId();
   meetingRecorderGeneration += 1;
   if (hasActiveSharedAudio()) {
     setMeetingAudioStatus("Listening...");
   }
   updateAudioStatus();
   updateContextIndicator();
-  recordNextMeetingAudioSegment();
+  try {
+    setMeetingAudioStatus("Listening...");
+    await startSharedAudioProcessor();
+  } catch (error) {
+    meetingListening = false;
+    setMeetingAudioStatus(`Unable to listen: ${error.message}`);
+    updateAudioStatus();
+  }
 }
 
 function stopListeningSession({ keepStatus = false, discardFinalChunk = false } = {}) {
   meetingListening = false;
-  stopMeetingAudioRequestTimer();
-  cancelScheduledMeetingAnswer();
-  pendingMeetingAnswerSegments = [];
-  pendingMeetingAnswerText = "";
+  stopSharedAudioProcessor();
+  meetingAudioSessionId = "";
   meetingRecorderGeneration += 1;
-  const recorder = meetingAudioRecorder;
-  let recorderStopped = Promise.resolve();
-
-  if (recorder && recorder.state !== "inactive") {
-    recorderStopped = new Promise((resolve) => {
-      recorder.addEventListener("stop", resolve, { once: true });
-    });
-    discardMeetingAudioChunks = discardFinalChunk;
-    recorder.stop();
-  }
   if (!keepStatus) {
     setMeetingAudioStatus(hasSharedAudioSession() ? "Audio shared" : "Not shared");
   }
   updateAudioStatus();
   updateContextIndicator();
-  return recorderStopped;
+  return Promise.resolve();
 }
 
 async function generateMeetingAnalysis() {
-  cancelScheduledMeetingAnswer();
-  pendingMeetingAnswerText = "";
-
   if (pendingTranscriptions.size) {
     setMeetingAudioStatus("Finishing transcription...");
     await Promise.allSettled(Array.from(pendingTranscriptions));
@@ -1143,10 +1529,8 @@ async function stopRecordingSession() {
 async function stopMeetingAudioSession() {
   const recorderStopped = stopListeningSession({ keepStatus: true, discardFinalChunk: true });
   await recorderStopped;
-  cancelScheduledMeetingAnswer();
-  pendingMeetingAnswerText = "";
-  stopMeetingAudioRequestTimer();
   meetingAudioShared = false;
+  meetingAudioSessionId = "";
 
   if (meetingAudioStream) {
     meetingAudioStream.getTracks().forEach((track) => track.stop());
@@ -1163,23 +1547,19 @@ async function checkBackend() {
   try {
     const response = await fetch(apiUrl("/health"));
     const payload = await response.json();
-    if (payload.provider === "ollama") {
-      setStatus(elements.connectionStatus, `Ollama | ${payload.ollamaModel}`, "neutral");
-      return;
-    }
-    setStatus(elements.connectionStatus, payload.geminiConfigured ? "Gemini ready" : "Set GEMINI_API_KEY", payload.geminiConfigured ? "" : "error");
+    setStatus(elements.connectionStatus, payload.externalAiEnabled === false ? "Documents only" : "Backend ready", "neutral");
   } catch (error) {
     setStatus(elements.connectionStatus, window.location.hostname.endsWith("github.io") ? "Start local backend" : "Backend unavailable", "error");
   }
 }
 
 function clearChat({ clearDocuments = false } = {}) {
-  cancelScheduledMeetingAnswer();
-  pendingMeetingAnswerText = "";
   messages = [];
   history = [];
   meetingTranscript = [];
   displayedMeetingTranscript = [];
+  recentDisplayedTranscriptHashes = [];
+  recentTranscriptHashes = [];
   localStorage.removeItem(STORAGE_KEYS.messages);
   localStorage.removeItem(STORAGE_KEYS.history);
   localStorage.removeItem(STORAGE_KEYS.meetingContext);
@@ -1201,14 +1581,14 @@ function clearChat({ clearDocuments = false } = {}) {
 }
 
 function loadState() {
-  cancelScheduledMeetingAnswer();
-  pendingMeetingAnswerText = "";
   clearStoredSessionData();
   documents = [];
   history = [];
   messages = [];
   meetingTranscript = [];
   displayedMeetingTranscript = [];
+  recentDisplayedTranscriptHashes = [];
+  recentTranscriptHashes = [];
 
   renderDocuments();
   renderHistory();
@@ -1285,8 +1665,8 @@ elements.startMeetingAudio.addEventListener("click", async () => {
   }
 });
 
-elements.startListening.addEventListener("click", () => {
-  startListeningSession();
+elements.startListening.addEventListener("click", async () => {
+  await startListeningSession();
 });
 
 elements.stopListening.addEventListener("click", () => {
@@ -1332,6 +1712,10 @@ elements.settingsButton.addEventListener("click", () => {
   startCurrentAnswer("Settings are managed through backend environment variables for this build.", "Settings");
 });
 
+elements.homeButton.addEventListener("click", () => {
+  endTrialSession();
+});
+
 elements.historyList.addEventListener("click", (event) => {
   const item = event.target.closest(".historyItem");
   if (item) {
@@ -1340,6 +1724,171 @@ elements.historyList.addEventListener("click", (event) => {
   }
 });
 
-loadState();
-checkBackend();
-window.scrollTo(0, 0);
+let dashboardInitialized = false;
+let trialExpiresAt = 0;
+let trialTimerId = null;
+let trialLogoutInProgress = false;
+
+function formatTrialTime(milliseconds) {
+  const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return [hours, minutes, seconds].map((value) => String(value).padStart(2, "0")).join(":");
+}
+
+function clearTrialTimer() {
+  if (trialTimerId) {
+    window.clearInterval(trialTimerId);
+    trialTimerId = null;
+  }
+}
+
+async function endTrialSession({ expired = false } = {}) {
+  if (trialLogoutInProgress) {
+    return;
+  }
+
+  trialLogoutInProgress = true;
+  clearTrialTimer();
+
+  try {
+    if (meetingRecording) {
+      await stopRecordingSession();
+    }
+    if (meetingListening || meetingAudioShared) {
+      await stopMeetingAudioSession();
+    }
+  } finally {
+    localStorage.removeItem(STORAGE_KEYS.demoAuthenticated);
+    trialExpiresAt = 0;
+    elements.trialTimer.textContent = expired ? "Trial ended" : "Trial 01:00:00";
+    revealLanding();
+    window.history.replaceState(null, "", `${window.location.pathname}#home`);
+    trialLogoutInProgress = false;
+  }
+}
+
+function expireTrialSession() {
+  return endTrialSession({ expired: true });
+}
+
+function updateTrialTimer() {
+  const remaining = trialExpiresAt - Date.now();
+  elements.trialTimer.textContent = `Trial ${formatTrialTime(remaining)}`;
+  if (remaining <= 0) {
+    expireTrialSession();
+  }
+}
+
+function startTrialTimer() {
+  clearTrialTimer();
+  trialExpiresAt = Date.now() + TRIAL_DURATION_MS;
+  updateTrialTimer();
+  trialTimerId = window.setInterval(updateTrialTimer, 1000);
+}
+
+function revealDashboard() {
+  const publicSite = document.querySelector("#publicSite");
+  const loginView = document.querySelector("#loginView");
+  const appShell = document.querySelector(".appShell");
+
+  document.body.classList.remove("publicMode", "loginMode");
+  publicSite.hidden = true;
+  loginView.hidden = true;
+  appShell.hidden = false;
+
+  if (!dashboardInitialized) {
+    dashboardInitialized = true;
+    loadState();
+    checkBackend();
+  }
+  window.scrollTo(0, 0);
+}
+
+function revealLanding() {
+  const publicSite = document.querySelector("#publicSite");
+  const loginView = document.querySelector("#loginView");
+  const appShell = document.querySelector(".appShell");
+
+  document.body.classList.add("publicMode");
+  document.body.classList.remove("loginMode");
+  publicSite.hidden = false;
+  loginView.hidden = true;
+  appShell.hidden = true;
+}
+
+function revealLogin() {
+  const publicSite = document.querySelector("#publicSite");
+  const loginView = document.querySelector("#loginView");
+  const appShell = document.querySelector(".appShell");
+  const loginEmail = document.querySelector("#loginEmail");
+
+  document.body.classList.add("loginMode");
+  document.body.classList.remove("publicMode");
+  publicSite.hidden = true;
+  loginView.hidden = false;
+  appShell.hidden = true;
+  window.scrollTo(0, 0);
+  requestAnimationFrame(() => loginEmail?.focus());
+}
+
+function setupPublicMotion() {
+  const motionItems = document.querySelectorAll(".motionItem");
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add("isVisible");
+        observer.unobserve(entry.target);
+      }
+    });
+  }, { threshold: 0.16 });
+
+  motionItems.forEach((item) => observer.observe(item));
+
+  const framer = window.framerMotion || window.Motion;
+  if (framer?.animate) {
+    document.querySelectorAll(".glassCard, .glassPanel, .primaryCta, .secondaryCta").forEach((node) => {
+      node.addEventListener("pointerenter", () => framer.animate(node, { scale: 1.01 }, { duration: 0.18 }));
+      node.addEventListener("pointerleave", () => framer.animate(node, { scale: 1 }, { duration: 0.18 }));
+    });
+  }
+}
+
+function setupDemoLogin() {
+  const loginForm = document.querySelector("#loginForm");
+  const loginError = document.querySelector("#loginError");
+
+  document.querySelectorAll("[data-auth-open]").forEach((button) => {
+    button.addEventListener("click", revealLogin);
+  });
+
+  document.querySelector("[data-login-back]")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    revealLanding();
+  });
+
+  loginForm?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const email = document.querySelector("#loginEmail").value.trim().toLowerCase();
+    const password = document.querySelector("#loginPassword").value;
+
+    if (email === DEMO_CREDENTIALS.email && password === DEMO_CREDENTIALS.password) {
+      localStorage.setItem(STORAGE_KEYS.demoAuthenticated, "true");
+      loginError.textContent = "";
+      startTrialTimer();
+      revealDashboard();
+      return;
+    }
+
+    loginError.textContent = "Use demo@orbynecue.com and Demo@123 to continue.";
+  });
+}
+
+function initPublicExperience() {
+  setupPublicMotion();
+  setupDemoLogin();
+  revealLanding();
+}
+
+initPublicExperience();

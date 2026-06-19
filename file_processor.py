@@ -22,6 +22,7 @@ client = None
 # ===============================
 DOCUMENT_CHUNKS = []
 DOCUMENT_EMBEDDINGS = []
+DOCUMENT_METADATA = []
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 
@@ -63,37 +64,47 @@ def stream_chunks(text, max_words=300):
 # TEXT EXTRACTION
 # ===============================
 def extract_text(path):
+    return "\n".join(item["text"] for item in extract_text_sections(path))
+
+
+def extract_text_sections(path):
     ext = os.path.splitext(path)[1].lower()
-    text = ""
+    sections = []
+    filename = os.path.basename(path)
 
     if ext == ".pdf":
         reader = PdfReader(path)
-        for p in reader.pages:
-            if p.extract_text():
-                text += p.extract_text() + "\n"
+        for page_number, page in enumerate(reader.pages, start=1):
+            page_text = page.extract_text()
+            if page_text:
+                sections.append({"text": page_text, "filename": filename, "page": page_number})
 
     elif ext == ".docx":
         doc = Document(path)
-        for p in doc.paragraphs:
-            text += p.text + "\n"
+        text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
+        sections.append({"text": text, "filename": filename, "page": None})
 
     elif ext == ".pptx":
         prs = Presentation(path)
-        for slide in prs.slides:
+        for slide_number, slide in enumerate(prs.slides, start=1):
+            slide_text = ""
             for shape in slide.shapes:
                 if hasattr(shape, "text"):
-                    text += shape.text + "\n"
+                    slide_text += shape.text + "\n"
+            sections.append({"text": slide_text, "filename": filename, "page": slide_number})
 
     elif ext == ".csv":
         with open(path, newline="", encoding="utf-8") as f:
             reader = csv.reader(f)
+            text = ""
             for row in reader:
                 text += " ".join(row) + "\n"
+            sections.append({"text": text, "filename": filename, "page": None})
 
     else:
         raise ValueError("Unsupported file type")
 
-    return text
+    return sections
 
 # ===============================
 # NORMALIZATION
@@ -107,20 +118,23 @@ def normalize_text(text: str) -> str:
 # MAIN ENTRY
 # ===============================
 def process_file(path):
-    global DOCUMENT_CHUNKS, DOCUMENT_EMBEDDINGS
+    global DOCUMENT_CHUNKS, DOCUMENT_EMBEDDINGS, DOCUMENT_METADATA
 
-    raw_text = extract_text(path)
-    text = normalize_text(raw_text)
+    sections = extract_text_sections(path)
 
     DOCUMENT_CHUNKS.clear()
     DOCUMENT_EMBEDDINGS.clear()
+    DOCUMENT_METADATA.clear()
 
-    chunks = list(stream_chunks(text))
-    DOCUMENT_CHUNKS.extend(chunks)
+    for section in sections:
+        text = normalize_text(section["text"])
+        for chunk in stream_chunks(text):
+            DOCUMENT_CHUNKS.append(chunk)
+            DOCUMENT_METADATA.append({"filename": section["filename"], "page": section["page"]})
 
     try:
         openai_client = get_openai_client()
-        for chunk in chunks:
+        for chunk in DOCUMENT_CHUNKS:
             emb = openai_client.embeddings.create(
                 model=EMBEDDING_MODEL,
                 input=chunk

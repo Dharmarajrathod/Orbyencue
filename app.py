@@ -1,12 +1,17 @@
+import io
 import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import tempfile
 import json
-from urllib import error, request
+import logging
+import wave
+from collections import deque
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,21 +21,16 @@ from pydantic import BaseModel, Field
 
 try:
     from config import load_environment
+    from config import vosk_model_path
 except ImportError:
     load_environment = None
+    vosk_model_path = None
+
+from processing_pipeline import clean_transcript, is_meaningful_question_or_request
 
 
 if load_environment:
     load_environment()
-
-
-DEFAULT_GEMINI_MODELS = [
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-]
-DEFAULT_OLLAMA_MODEL = "llama3.2"
-DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 
 
 class AnswerRequest(BaseModel):
@@ -42,8 +42,14 @@ class AnswerResponse(BaseModel):
     model: str
 
 
+class KnowledgeChunk(BaseModel):
+    text: str
+    filename: str
+    page: Optional[int] = None
+
+
 class KnowledgeResponse(BaseModel):
-    chunks: list[str]
+    chunks: list[KnowledgeChunk]
     chunkCount: int
     filename: str
 
@@ -51,22 +57,32 @@ class KnowledgeResponse(BaseModel):
 class TranscriptResponse(BaseModel):
     transcript: str
     model: str
-
-
-class GeminiQuotaError(RuntimeError):
-    def __init__(self, retry_after: int | None = None):
-        self.retry_after = retry_after
-        message = "Gemini quota is exhausted."
-        if retry_after:
-            message += f" Retry after about {retry_after} seconds."
-        message += " Wait for quota reset or enable billing/increase quota in Google AI Studio."
-        super().__init__(message)
+    chunkNumber: int = 0
+    chunkSize: int = 0
+    duration: float = 0.0
+    sampleRate: int = 0
+    audioEnergy: float = 0.0
+    voiceActivity: bool = False
+    language: str = "unknown"
+    languageConfidence: float = 0.0
+    transcriptionConfidence: float = 0.0
+    meaningful: bool = False
+    discarded: bool = False
+    reason: str = ""
+    latencyMs: int = 0
+    stageTimings: dict[str, float] = Field(default_factory=dict)
 
 
 app = FastAPI(title="ORBYNECUE AI Backend")
-gemini_client = None
 BASE_DIR = Path(__file__).resolve().parent
 SUPPORTED_UPLOAD_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".pdf", ".doc", ".docx", ".ppt", ".pptx"}
+AUDIO_DEBUG_LOGS = deque(maxlen=300)
+logger = logging.getLogger("orbynecue.audio")
+logging.basicConfig(level=logging.INFO)
+STREAMING_STT_SESSIONS = {}
+STREAMING_STT_LOCK = threading.Lock()
+STREAMING_STT_TTL_SECONDS = 15 * 60
+STREAMING_VOSK_MODEL = None
 
 
 def get_allowed_origins():
@@ -85,60 +101,6 @@ app.add_middleware(
 )
 
 app.mount("/assets", StaticFiles(directory=BASE_DIR / "assets"), name="assets")
-
-
-def get_models():
-    configured = os.getenv("GEMINI_MODELS") or os.getenv("GEMINI_MODEL")
-    if configured:
-        return [model.strip() for model in configured.split(",") if model.strip()]
-    return DEFAULT_GEMINI_MODELS
-
-
-def get_ai_provider():
-    configured = os.getenv("AI_PROVIDER", "").strip().lower()
-    if configured in {"ollama", "gemini"}:
-        return configured
-    if os.getenv("GEMINI_API_KEY"):
-        return "gemini"
-    return "ollama"
-
-
-def get_ollama_base_url():
-    return os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_BASE_URL).rstrip("/")
-
-
-def get_ollama_model():
-    return os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL
-
-
-def get_gemini_client():
-    global gemini_client
-    if gemini_client is None:
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise RuntimeError("GEMINI_API_KEY is not configured on the server.")
-
-        from google import genai
-
-        gemini_client = genai.Client(api_key=api_key)
-    return gemini_client
-
-
-def is_quota_error(message: str) -> bool:
-    return "429" in message or "RESOURCE_EXHAUSTED" in message or "quota" in message.lower()
-
-
-def extract_retry_after(message: str) -> int | None:
-    patterns = [
-        r"retry in ([0-9.]+)s",
-        r"'retryDelay': '([0-9]+)s'",
-        r'"retryDelay": "([0-9]+)s"',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, message, re.IGNORECASE)
-        if match:
-            return max(1, int(float(match.group(1))))
-    return None
 
 
 def stream_chunks(text: str, max_words: int = 220):
@@ -168,8 +130,12 @@ def normalize_text(text: str) -> str:
 
 
 def extract_upload_text(path: Path, extension: str) -> str:
+    return "\n".join(section["text"] for section in extract_upload_sections(path, extension))
+
+
+def extract_upload_sections(path: Path, extension: str) -> list[dict]:
     if extension in {".txt", ".md", ".json"}:
-        return path.read_text(encoding="utf-8", errors="ignore")
+        return [{"text": path.read_text(encoding="utf-8", errors="ignore"), "page": None}]
 
     if extension == ".csv":
         import csv
@@ -178,13 +144,16 @@ def extract_upload_text(path: Path, extension: str) -> str:
         with path.open(newline="", encoding="utf-8", errors="ignore") as file_obj:
             for row in csv.reader(file_obj):
                 rows.append(" ".join(cell for cell in row if cell))
-        return "\n".join(rows)
+        return [{"text": "\n".join(rows), "page": None}]
 
     if extension == ".pdf":
         from pypdf import PdfReader
 
         reader = PdfReader(str(path))
-        return "\n".join(page.extract_text() or "" for page in reader.pages)
+        return [
+            {"text": page.extract_text() or "", "page": page_number}
+            for page_number, page in enumerate(reader.pages, start=1)
+        ]
 
     if extension == ".docx":
         from docx import Document
@@ -194,24 +163,26 @@ def extract_upload_text(path: Path, extension: str) -> str:
         for table in document.tables:
             for row in table.rows:
                 parts.append(" ".join(cell.text.strip() for cell in row.cells if cell.text.strip()))
-        return "\n".join(parts)
+        return [{"text": "\n".join(parts), "page": None}]
 
     if extension == ".doc":
-        return extract_legacy_office_text(path, extension)
+        return [{"text": extract_legacy_office_text(path, extension), "page": None}]
 
     if extension == ".pptx":
         from pptx import Presentation
 
         presentation = Presentation(str(path))
-        parts = []
-        for slide in presentation.slides:
+        sections = []
+        for slide_number, slide in enumerate(presentation.slides, start=1):
+            parts = []
             for shape in slide.shapes:
                 if hasattr(shape, "text") and shape.text.strip():
                     parts.append(shape.text)
-        return "\n".join(parts)
+            sections.append({"text": "\n".join(parts), "page": slide_number})
+        return sections
 
     if extension == ".ppt":
-        return extract_legacy_office_text(path, extension)
+        return [{"text": extract_legacy_office_text(path, extension), "page": None}]
 
     raise ValueError(f"Unsupported file type: {extension}")
 
@@ -256,165 +227,217 @@ def extract_legacy_office_text(path: Path, extension: str) -> str:
     )
 
 
-def build_prompt(question: str) -> str:
-    return f"""
-You are an interview assistant.
-
-STRICT OUTPUT RULES (MANDATORY):
-- The answer MUST contain exactly one numbered item.
-- Keep the content point-wise inside that one item.
-- Follow this EXACT format:
-
-1. **Complete Answer**:
-- first concise point
-- second concise point
-
-IMPORTANT:
-- Headings MUST be wrapped in ** ** (markdown bold).
-- Do NOT add a second numbered item.
-- Use document or meeting context when it is supplied in the question.
-- Do NOT add extra text before or after the list.
-
-Question:
-{question}
-
-Answer:
-"""
-
-
 def generate_answer(question: str):
-    if get_ai_provider() == "ollama":
-        return generate_ollama_answer(question)
-    return generate_gemini_answer(question)
+    raise RuntimeError("External AI answers are disabled. Upload documents and answer from retrieved document context only.")
 
 
-def generate_gemini_answer(question: str):
-    errors = []
-    quota_retry_after = None
-    prompt = build_prompt(question)
+def decode_wav_pcm16(audio_bytes: bytes) -> tuple[bytes, int]:
+    with wave.open(io.BytesIO(audio_bytes), "rb") as wav_file:
+        channels = wav_file.getnchannels()
+        sample_width = wav_file.getsampwidth()
+        sample_rate = wav_file.getframerate()
+        frames = wav_file.readframes(wav_file.getnframes())
 
-    for model in get_models():
-        for attempt in range(3):
-            try:
-                response = get_gemini_client().models.generate_content(
-                    model=model,
-                    contents=prompt,
-                )
-                return response.text.strip(), f"gemini/{model}"
-            except Exception as exc:
-                message = str(exc)
-                errors.append(f"{model}: {message}")
-                if is_quota_error(message):
-                    retry_after = extract_retry_after(message)
-                    if retry_after is not None:
-                        quota_retry_after = retry_after if quota_retry_after is None else min(quota_retry_after, retry_after)
-                    break
-                if "503" not in message and "UNAVAILABLE" not in message:
-                    break
-                time.sleep(0.75 * (attempt + 1))
+    if sample_width != 2:
+        raise ValueError("Streaming STT expects 16-bit PCM WAV chunks.")
 
-    if quota_retry_after is not None or any(is_quota_error(error) for error in errors):
-        raise GeminiQuotaError(quota_retry_after)
+    if channels == 1:
+        return frames, sample_rate
 
-    raise RuntimeError("Gemini fallback failed. " + " | ".join(errors[-3:]))
+    if channels != 2:
+        raise ValueError("Streaming STT supports mono or stereo WAV chunks.")
+
+    mono = bytearray(len(frames) // 2)
+    write_offset = 0
+    for offset in range(0, len(frames), 4):
+        left = int.from_bytes(frames[offset : offset + 2], "little", signed=True)
+        right = int.from_bytes(frames[offset + 2 : offset + 4], "little", signed=True)
+        sample = int((left + right) / 2)
+        mono[write_offset : write_offset + 2] = sample.to_bytes(2, "little", signed=True)
+        write_offset += 2
+    return bytes(mono), sample_rate
 
 
-def generate_ollama_answer(question: str):
-    prompt = build_prompt(question)
-    model = get_ollama_model()
-    url = f"{get_ollama_base_url()}/api/generate"
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-    }
+class VoskStreamingSession:
+    def __init__(self, language_code: str = "en"):
+        try:
+            from vosk import KaldiRecognizer, Model
+        except ImportError as exc:
+            raise RuntimeError("Vosk is not installed for streaming speech-to-text.") from exc
 
-    try:
-        body = json.dumps(payload).encode("utf-8")
-        req = request.Request(
-            url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with request.urlopen(req, timeout=int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"Ollama request failed with HTTP {exc.code}: {detail}") from exc
-    except error.URLError as exc:
-        raise RuntimeError(
-            f"Ollama is not reachable at {get_ollama_base_url()}. "
-            f"Start Ollama and run `ollama pull {model}`."
-        ) from exc
+        global STREAMING_VOSK_MODEL
+        if vosk_model_path is None:
+            raise RuntimeError("Vosk model path helper is unavailable.")
 
-    answer = (data.get("response") or "").strip()
-    if not answer:
-        raise RuntimeError("Ollama returned an empty answer.")
-    return answer, f"ollama/{model}"
+        model_path = vosk_model_path()
+        if not model_path.exists():
+            raise RuntimeError(f"Vosk model not found: {model_path}")
+
+        if STREAMING_VOSK_MODEL is None:
+            STREAMING_VOSK_MODEL = Model(str(model_path))
+
+        self.model = STREAMING_VOSK_MODEL
+        self.recognizer = KaldiRecognizer(self.model, 16000)
+        self.recognizer.SetWords(False)
+        self.language_code = language_code or "en"
+        self.last_partial = ""
+        self.last_used_at = time.time()
+
+    def accept_chunk(self, audio_bytes: bytes) -> dict:
+        pcm, sample_rate = decode_wav_pcm16(audio_bytes)
+        if sample_rate != 16000:
+            raise ValueError(f"Expected 16000 Hz WAV chunks, got {sample_rate} Hz.")
+
+        self.last_used_at = time.time()
+        if self.recognizer.AcceptWaveform(pcm):
+            text = json.loads(self.recognizer.Result()).get("text", "").strip()
+            self.last_partial = ""
+            return {
+                "speechDetected": bool(text),
+                "language": "english",
+                "iso639_1": "en",
+                "languageConfidence": 0.95 if text else 0.0,
+                "transcript": text,
+                "transcriptionConfidence": 0.9 if text else 0.0,
+                "meaningful": is_meaningful_question_or_request(clean_transcript(text)) if text else False,
+                "model": "vosk/streaming",
+                "isFinal": True,
+            }
+
+        text = json.loads(self.recognizer.PartialResult()).get("partial", "").strip()
+        if text == self.last_partial:
+            text = ""
+        else:
+            self.last_partial = text
+        return {
+            "speechDetected": bool(text),
+            "language": "english" if text else "unknown",
+            "iso639_1": "en" if text else "unknown",
+            "languageConfidence": 0.7 if text else 0.0,
+            "transcript": text,
+            "transcriptionConfidence": 0.65 if text else 0.0,
+            "meaningful": is_meaningful_question_or_request(clean_transcript(text)) if text else False,
+            "model": "vosk/streaming-partial",
+            "isFinal": False,
+        }
+
+    def finish(self) -> dict:
+        self.last_used_at = time.time()
+        text = json.loads(self.recognizer.FinalResult()).get("text", "").strip()
+        self.last_partial = ""
+        return {
+            "speechDetected": bool(text),
+            "language": "english" if text else "unknown",
+            "iso639_1": "en" if text else "unknown",
+            "languageConfidence": 0.95 if text else 0.0,
+            "transcript": text,
+            "transcriptionConfidence": 0.9 if text else 0.0,
+            "meaningful": is_meaningful_question_or_request(clean_transcript(text)) if text else False,
+            "model": "vosk/streaming-final",
+            "isFinal": True,
+        }
 
 
-def transcribe_audio(audio_bytes: bytes, mime_type: str, language: str = "auto"):
-    if get_ai_provider() == "ollama":
-        raise RuntimeError(
-            "Meeting audio transcription still needs Gemini or another speech-to-text engine. "
-            "Use browser speech recognition/manual questions, or set AI_PROVIDER=gemini for this endpoint."
-        )
+def prune_streaming_stt_sessions(now: Optional[float] = None) -> None:
+    now = now or time.time()
+    expired = [
+        session_id
+        for session_id, session in STREAMING_STT_SESSIONS.items()
+        if now - session.last_used_at > STREAMING_STT_TTL_SECONDS
+    ]
+    for session_id in expired:
+        STREAMING_STT_SESSIONS.pop(session_id, None)
 
-    errors = []
-    quota_retry_after = None
-    language_hint = "Detect and transcribe every spoken language naturally."
-    if language and language != "auto":
-        language_hint = f"The primary spoken language is {language}; still keep any other spoken language if it appears."
-    prompt = (
-        "Transcribe the spoken words in this audio. "
-        f"{language_hint} "
-        "Return only the transcript text. If there is no clear speech, return an empty string."
-    )
 
-    from google.genai import types
+def should_use_streaming_stt(requested_language: str, mime_type: str, session_id: str) -> bool:
+    if not session_id:
+        return False
+    if os.getenv("ORBYNE_STREAMING_STT", "auto").strip().lower() in {"0", "false", "off", "disabled"}:
+        return False
+    if requested_language not in {"", "auto", "en"}:
+        return False
+    return "wav" in mime_type.lower()
 
-    for model in get_models():
-        for attempt in range(3):
-            try:
-                response = get_gemini_client().models.generate_content(
-                    model=model,
-                    contents=[
-                        prompt,
-                        types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-                    ],
-                )
-                return (response.text or "").strip(), f"gemini/{model}"
-            except Exception as exc:
-                message = str(exc)
-                errors.append(f"{model}: {message}")
-                if is_quota_error(message):
-                    retry_after = extract_retry_after(message)
-                    if retry_after is not None:
-                        quota_retry_after = retry_after if quota_retry_after is None else min(quota_retry_after, retry_after)
-                    break
-                if "503" not in message and "UNAVAILABLE" not in message:
-                    break
-                time.sleep(0.75 * (attempt + 1))
 
-    if quota_retry_after is not None or any(is_quota_error(error) for error in errors):
-        raise GeminiQuotaError(quota_retry_after)
+def transcribe_streaming_audio(audio_bytes: bytes, session_id: str, final_chunk: bool = False):
+    with STREAMING_STT_LOCK:
+        prune_streaming_stt_sessions()
+        session = STREAMING_STT_SESSIONS.get(session_id)
+        if session is None:
+            session = VoskStreamingSession()
+            STREAMING_STT_SESSIONS[session_id] = session
 
-    raise RuntimeError("Gemini transcription failed. " + " | ".join(errors[-3:]))
+        result = session.accept_chunk(audio_bytes)
+        if final_chunk:
+            final_result = session.finish()
+            STREAMING_STT_SESSIONS.pop(session_id, None)
+            if final_result["transcript"]:
+                result = final_result
+        return result
 
 
 @app.get("/health")
 def health():
-    provider = get_ai_provider()
     return {
         "status": "ok",
-        "provider": provider,
-        "geminiConfigured": bool(os.getenv("GEMINI_API_KEY")),
-        "ollamaConfigured": provider == "ollama",
-        "ollamaBaseUrl": get_ollama_base_url(),
-        "ollamaModel": get_ollama_model(),
-        "models": get_models(),
+        "provider": "documents",
+        "externalAiEnabled": False,
+        "speechToText": "vosk/streaming",
     }
+
+
+def record_audio_debug(entry: dict):
+    AUDIO_DEBUG_LOGS.append(entry)
+    logger.info("audio_chunk %s", json.dumps(entry, ensure_ascii=True, default=str))
+
+
+def transcript_response(
+    *,
+    transcript: str,
+    model: str,
+    chunk_number: int,
+    chunk_size: int,
+    duration: float,
+    sample_rate: int,
+    audio_energy: float,
+    voice_activity: bool,
+    language: str = "unknown",
+    language_confidence: float = 0.0,
+    transcription_confidence: float = 0.0,
+    meaningful: bool = False,
+    discarded: bool = False,
+    reason: str = "",
+    stage_timings: Optional[dict[str, float]] = None,
+    started_at: float,
+):
+    latency_ms = int((time.time() - started_at) * 1000)
+    merged_stage_timings = dict(stage_timings or {})
+    merged_stage_timings.setdefault("totalBackendMs", latency_ms)
+    response = TranscriptResponse(
+        transcript=transcript,
+        model=model,
+        chunkNumber=chunk_number,
+        chunkSize=chunk_size,
+        duration=round(duration, 3),
+        sampleRate=sample_rate,
+        audioEnergy=round(audio_energy, 6),
+        voiceActivity=voice_activity,
+        language=language,
+        languageConfidence=round(language_confidence, 3),
+        transcriptionConfidence=round(transcription_confidence, 3),
+        meaningful=meaningful,
+        discarded=discarded,
+        reason=reason,
+        latencyMs=latency_ms,
+        stageTimings=merged_stage_timings,
+    )
+    record_audio_debug(response.dict())
+    return response
+
+
+@app.get("/debug/audio")
+def audio_debug():
+    return {"chunks": list(AUDIO_DEBUG_LOGS)}
 
 
 @app.get("/")
@@ -437,10 +460,16 @@ def answer(request: AnswerRequest):
     try:
         answer_text, model = generate_answer(request.question.strip())
         return AnswerResponse(answer=answer_text, model=model)
-    except GeminiQuotaError as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/answer-stream")
+def answer_stream(request: AnswerRequest):
+    raise HTTPException(
+        status_code=410,
+        detail="External AI answer streaming is disabled. Answers must come from uploaded documents only.",
+    )
 
 
 @app.post("/knowledge", response_model=KnowledgeResponse)
@@ -459,11 +488,19 @@ async def upload_knowledge(file: UploadFile = File(...)):
             while chunk := await file.read(1024 * 1024):
                 temp_file.write(chunk)
 
-        text = normalize_text(extract_upload_text(temp_path, extension))
-        if not text:
+        sections = [
+            {"text": normalize_text(section["text"]), "page": section["page"]}
+            for section in extract_upload_sections(temp_path, extension)
+        ]
+        sections = [section for section in sections if section["text"]]
+        if not sections:
             raise HTTPException(status_code=400, detail="No readable text found in this file.")
 
-        chunks = list(stream_chunks(text))
+        chunks = [
+            KnowledgeChunk(text=chunk, filename=filename, page=section["page"])
+            for section in sections
+            for chunk in stream_chunks(section["text"])
+        ]
         return KnowledgeResponse(chunks=chunks, chunkCount=len(chunks), filename=filename)
     except HTTPException:
         raise
@@ -475,17 +512,135 @@ async def upload_knowledge(file: UploadFile = File(...)):
 
 
 @app.post("/transcribe-audio", response_model=TranscriptResponse)
-async def transcribe_meeting_audio(file: UploadFile = File(...), language: str = Form("auto")):
+async def transcribe_meeting_audio(
+    file: UploadFile = File(...),
+    language: str = Form("auto"),
+    chunk_number: int = Form(0),
+    session_id: str = Form(""),
+    final_chunk: bool = Form(False),
+    duration: float = Form(0.0),
+    sample_rate: int = Form(0),
+    audio_energy: float = Form(0.0),
+    voice_activity: bool = Form(True),
+):
+    started_at = time.time()
+    read_started_at = time.time()
     audio_bytes = await file.read()
+    stage_timings = {
+        "audioReadMs": round((time.time() - read_started_at) * 1000, 2),
+        "languageDetectionMs": 0.0,
+        "speechToTextMs": 0.0,
+        "streamingSttMs": 0.0,
+    }
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Empty audio chunk.")
 
     mime_type = file.content_type or "audio/webm"
     try:
-        transcript, model = transcribe_audio(audio_bytes, mime_type, language)
-        return TranscriptResponse(transcript=transcript, model=model)
-    except GeminiQuotaError as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
+        requested_language = (language or "auto").strip().lower()
+        session_id = (session_id or "").strip()
+        transcript = ""
+        confidence = 0.0
+        model = ""
+        language_code = "unknown"
+        language_confidence = 0.0
+        speech_detected = False
+        meaningful = False
+        transcribed = False
+
+        if not should_use_streaming_stt(requested_language, mime_type, session_id):
+            raise RuntimeError("Meeting audio speech-to-text requires sessioned 16 kHz WAV chunks.")
+
+        stt_started_at = time.time()
+        result = transcribe_streaming_audio(audio_bytes, session_id, final_chunk=final_chunk)
+        streaming_stt_ms = round((time.time() - stt_started_at) * 1000, 2)
+        stage_timings["speechToTextMs"] = streaming_stt_ms
+        stage_timings["streamingSttMs"] = streaming_stt_ms
+        language_code = result["iso639_1"]
+        language_confidence = result["languageConfidence"]
+        model = result["model"]
+        transcript = result["transcript"]
+        confidence = result["transcriptionConfidence"]
+        speech_detected = bool(result["speechDetected"])
+        meaningful = bool(result["meaningful"])
+        transcribed = True
+
+        has_transcript_text = bool((transcript or "").strip())
+        if not speech_detected and not has_transcript_text:
+            return transcript_response(
+                transcript="",
+                model=model,
+                chunk_number=chunk_number,
+                chunk_size=len(audio_bytes),
+                duration=duration,
+                sample_rate=sample_rate,
+                audio_energy=audio_energy,
+                voice_activity=voice_activity,
+                language=language_code,
+                language_confidence=language_confidence,
+                discarded=True,
+                reason="no_clear_speech",
+                stage_timings=stage_timings,
+                started_at=started_at,
+            )
+        if len(transcript.split()) > 24:
+            return transcript_response(
+                transcript="",
+                model=model,
+                chunk_number=chunk_number,
+                chunk_size=len(audio_bytes),
+                duration=duration,
+                sample_rate=sample_rate,
+                audio_energy=audio_energy,
+                voice_activity=voice_activity,
+                language=language_code,
+                language_confidence=language_confidence,
+                transcription_confidence=confidence,
+                discarded=True,
+                reason="implausible_transcript",
+                stage_timings=stage_timings,
+                started_at=started_at,
+            )
+        if confidence < 0.45 and not has_transcript_text:
+            return transcript_response(
+                transcript="",
+                model=model,
+                chunk_number=chunk_number,
+                chunk_size=len(audio_bytes),
+                duration=duration,
+                sample_rate=sample_rate,
+                audio_energy=audio_energy,
+                voice_activity=voice_activity,
+                language=language_code,
+                language_confidence=language_confidence,
+                transcription_confidence=confidence,
+                discarded=True,
+                reason="low_transcription_confidence",
+                stage_timings=stage_timings,
+                started_at=started_at,
+            )
+
+        cleaned = clean_transcript(transcript)
+        meaningful = meaningful or is_meaningful_question_or_request(cleaned)
+        stage_timings["totalBackendMs"] = round((time.time() - started_at) * 1000, 2)
+
+        return transcript_response(
+            transcript=cleaned,
+            model=model,
+            chunk_number=chunk_number,
+            chunk_size=len(audio_bytes),
+            duration=duration,
+            sample_rate=sample_rate,
+            audio_energy=audio_energy,
+            voice_activity=voice_activity,
+            language=language_code,
+            language_confidence=language_confidence,
+            transcription_confidence=confidence,
+            meaningful=meaningful,
+            reason="",
+            stage_timings=stage_timings,
+            started_at=started_at,
+        )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

@@ -143,6 +143,12 @@ class StreamingTranscriber:
                             continue
 
                         if result.is_final:
+                            confidence = getattr(result.alternatives[0], "confidence", 0.0) or 0.0
+                            detected_language = getattr(result, "language_code", "") or self.language_code
+                            if detected_language and not detected_language.lower().startswith("en"):
+                                continue
+                            if confidence < 0.7:
+                                continue
                             self.last_interim = ""
                             self.on_final_text(text)
                         else:

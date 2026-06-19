@@ -10,7 +10,8 @@ from PIL import Image, ImageTk
 import re
 
 from license import is_license_valid, load_license, save_license, verify_with_backend
-from rag_engine import answer_from_best_document, answer_from_document, answer_from_gemini
+from processing_pipeline import RecentTranscriptCache, clean_transcript, is_meaningful_question_or_request
+from rag_engine import answer_with_source
 from listener import SystemAudioListener
 from file_processor import process_file
 from streaming_transcriber import StreamingTranscriber
@@ -64,6 +65,7 @@ class InterviewHelperGUI:
         self.last_live_text = ""
         self.silence_finalize_seconds = 0.45
         self.selected_language = tk.StringVar(value="English")
+        self.recent_transcripts = RecentTranscriptCache()
 
         # ================= ROOT =================
         self.container = tk.Frame(root, bg="#1e3c72")
@@ -324,69 +326,37 @@ class InterviewHelperGUI:
         if not self.speech_buffer:
             return
 
-        combined_text = " ".join(self.speech_buffer).strip()
+        combined_text = clean_transcript(" ".join(self.speech_buffer).strip())
         self.speech_buffer.clear()
+
+        if not is_meaningful_question_or_request(combined_text):
+            return
+        if self.recent_transcripts.seen_or_add(combined_text):
+            return
 
         self.log(f"❓ Interpreted Input: {combined_text}", "question")
 
-        answer, confidence = answer_from_document(combined_text)
-
-
-        # ================= DOCUMENT ANSWER =================
-        if answer:
-            self.text.insert(
-                tk.END,
-                f"💡 Answer (Document | Match: {confidence}%):\n",
-                "status"
-            )
-
-            self._insert_answer_text(answer)
+        try:
+            result = answer_with_source(combined_text)
+        except Exception as exc:
+            self.text.insert(tk.END, f"❌ Answer generation error: {exc}\n", "error")
             self.text.see(tk.END)
+            self.log("─" * 60, "status")
+            return
 
-        # ================= GEMINI FALLBACK =================
-        else:
-            try:
-                fallback = answer_from_gemini(combined_text)
-            except Exception as e:
-                fallback, fallback_confidence = answer_from_best_document(combined_text)
-                if not fallback:
-                    self.text.insert(
-                        tk.END,
-                        f"❌ Gemini error: {e}\n",
-                        "error"
-                    )
-                    self.text.see(tk.END)
-                    self.log("─" * 60, "status")
-                    return
+        document_label = ""
+        if result.get("document"):
+            document_label = f" | Document: {result['document']}"
+            if result.get("page"):
+                document_label += f" | Page: {result['page']}"
 
-                self.text.insert(
-                    tk.END,
-                    f"💡 Answer (Document Only | Gemini unavailable | Match: {fallback_confidence}%):\n",
-                    "status"
-                )
-
-                self._insert_answer_text(fallback)
-                self.text.see(tk.END)
-                self.log("─" * 60, "status")
-                return
-
-            if not fallback or not fallback.strip():
-                self.text.insert(
-                    tk.END,
-                    "⚠️ Question not found in document. No AI answer generated.\n",
-                    "error"
-                )
-            else:
-                self.text.insert(
-                    tk.END,
-                    "💡 Answer (Gemini):\n",
-                    "status"
-                )
-
-                self._insert_answer_text(fallback)
-
-            self.text.see(tk.END)
-
+        self.text.insert(
+            tk.END,
+            f"💡 Answer (Source: {result['source']} | Similarity: {result['similarity']}%{document_label}):\n",
+            "status"
+        )
+        self._insert_answer_text(result["answer"])
+        self.text.see(tk.END)
         self.log("─" * 60, "status")
 
 

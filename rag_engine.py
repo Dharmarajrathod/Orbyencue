@@ -8,7 +8,7 @@ import requests
 from openai import OpenAI
 
 from config import load_environment
-from file_processor import DOCUMENT_CHUNKS, DOCUMENT_EMBEDDINGS
+from file_processor import DOCUMENT_CHUNKS, DOCUMENT_EMBEDDINGS, DOCUMENT_METADATA
 
 # ======================================================
 # Load .env correctly (works in EXE + normal Python)
@@ -19,6 +19,7 @@ gemini_client = None
 
 TOP_K = 4
 DOCUMENT_MATCH_THRESHOLD = 40.0
+INSUFFICIENT_DOCUMENT_ANSWER = "The uploaded documents do not contain enough information."
 MAX_LOCAL_ANSWER_WORDS = 180
 DOCUMENT_POINT_PREFIX = "^(\\s*(?:[-*\\u2022]|\\d+[.)]|[a-zA-Z][.)])\\s+)"
 DEFAULT_GEMINI_MODELS = [
@@ -116,8 +117,16 @@ def format_document_points(lines):
 
 def is_question_line(line: str):
     clean_line = line.strip()
+    question_words = len(tokenize(clean_line))
+    has_question_prefix = bool(
+        re.match(
+            r"^(tell me|describe|explain|why|how|what|when|where|who|which|can|could|would|do|does|did|are|is|have|has)\b",
+            clean_line,
+            re.IGNORECASE,
+        )
+    )
     return bool(re.match(r"^q(uestion)?\s*\d*[:.)-]?\s+", clean_line, re.IGNORECASE)) or (
-        clean_line.endswith("?") and len(tokenize(clean_line)) <= 24
+        question_words <= 24 and (clean_line.endswith("?") or has_question_prefix)
     )
 
 
@@ -167,15 +176,42 @@ def local_answer_from_context(question: str, scored_chunks):
     return f"1. **Complete Answer**:\n{section}"
 
 
+def best_document_matches(question: str):
+    if not DOCUMENT_CHUNKS:
+        return []
+
+    if len(DOCUMENT_EMBEDDINGS) == len(DOCUMENT_CHUNKS):
+        try:
+            q_emb = get_openai_client().embeddings.create(
+                model="text-embedding-3-small",
+                input=question,
+            ).data[0].embedding
+            q_emb = np.array(q_emb)
+            scored = [
+                (cosine_similarity(q_emb, emb), chunk, DOCUMENT_METADATA[index] if index < len(DOCUMENT_METADATA) else {})
+                for index, (chunk, emb) in enumerate(zip(DOCUMENT_CHUNKS, DOCUMENT_EMBEDDINGS))
+            ]
+            scored.sort(reverse=True, key=lambda item: item[0])
+            return scored
+        except Exception:
+            pass
+
+    scored = [
+        (lexical_similarity(question, chunk), chunk, DOCUMENT_METADATA[index] if index < len(DOCUMENT_METADATA) else {})
+        for index, chunk in enumerate(DOCUMENT_CHUNKS)
+    ]
+    scored.sort(reverse=True, key=lambda item: item[0])
+    return scored
+
+
 def answer_from_local_document(question: str, allow_low_confidence=False):
-    scores = [(lexical_similarity(question, chunk), chunk) for chunk in DOCUMENT_CHUNKS]
-    scores.sort(reverse=True, key=lambda item: item[0])
+    scores = [(score, chunk) for score, chunk, _metadata in best_document_matches(question)]
 
     if not scores:
         return None, 0.0
 
     confidence = round(scores[0][0] * 100, 2)
-    if not allow_low_confidence and confidence <= DOCUMENT_MATCH_THRESHOLD:
+    if not allow_low_confidence and confidence < DOCUMENT_MATCH_THRESHOLD:
         return None, confidence
 
     return local_answer_from_context(question, scores), confidence
@@ -213,7 +249,7 @@ def answer_from_document(question: str):
 
     best_score = scores[0][0]
     confidence = round(best_score * 100, 2)
-    if confidence <= DOCUMENT_MATCH_THRESHOLD:
+    if confidence < DOCUMENT_MATCH_THRESHOLD:
         return None, confidence
 
     context = scores[0][1]
@@ -236,6 +272,8 @@ STRICT OUTPUT RULES (MANDATORY):
 - Do NOT repeat the answers.
 - Do NOT add conclusions or summaries.
 - Use only the best matching context and answer the question directly.
+- If the context does not contain the answer, respond exactly:
+{INSUFFICIENT_DOCUMENT_ANSWER}
 
 Context:
 {context}
@@ -259,6 +297,30 @@ Answer:
 
     answer = response.choices[0].message.content.strip()
     return answer, confidence
+
+
+def answer_with_source(question: str):
+    matches = best_document_matches(question)
+    confidence = round(matches[0][0] * 100, 2) if matches else 0.0
+    metadata = matches[0][2] if matches else {}
+
+    if matches and confidence >= DOCUMENT_MATCH_THRESHOLD:
+        answer, _ = answer_from_document(question)
+        return {
+            "answer": answer or INSUFFICIENT_DOCUMENT_ANSWER,
+            "source": "Document",
+            "similarity": confidence,
+            "document": metadata.get("filename") or "",
+            "page": metadata.get("page"),
+        }
+
+    return {
+        "answer": answer_from_gemini(question),
+        "source": "Gemini",
+        "similarity": confidence,
+        "document": "",
+        "page": None,
+    }
 
 
 def answer_from_gemini(question: str):

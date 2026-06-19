@@ -97,7 +97,7 @@ def test_local_fallback_skips_matched_numbered_question(monkeypatch):
     assert "handle stakeholder feedback" not in answer
 
 
-def test_local_fallback_requires_more_than_40_percent_match(monkeypatch):
+def test_local_fallback_accepts_40_percent_match(monkeypatch):
     monkeypatch.setattr(
         rag_engine,
         "DOCUMENT_CHUNKS",
@@ -108,7 +108,7 @@ def test_local_fallback_requires_more_than_40_percent_match(monkeypatch):
     answer, confidence = rag_engine.answer_from_document("quota billing unrelated extra words")
 
     assert confidence == 40.0
-    assert answer is None
+    assert "quota billing failure" in answer
 
 
 def test_best_document_answer_allows_low_confidence_when_ai_is_unavailable(monkeypatch):

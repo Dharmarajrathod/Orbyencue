@@ -5,10 +5,201 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ORBYNECUE</title>
     <link rel="icon" href="icon.png">
-    <link rel="stylesheet" href="assets/styles.css?v=20260612-3">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="assets/styles.css?v=20260619-warm-glass-all-pages-v4">
   </head>
-  <body>
-    <div class="appShell">
+  <body class="publicMode">
+    <div id="publicSite" class="publicSite">
+      <nav class="landingNav" aria-label="Primary navigation">
+        <a class="landingLogo" href="#home" aria-label="ORBYNECUE home">ORBYNECUE</a>
+        <div class="landingLinks" aria-label="Landing navigation">
+          <a href="#home">Home</a>
+          <a href="#pricing">Pricing</a>
+          <a href="#demo">Demo</a>
+          <a href="#contact">Contact</a>
+        </div>
+        <div class="landingActions">
+          <button type="button" class="navLogin" data-auth-open>Login</button>
+          <button type="button" class="navTrial" data-auth-open>Start Free Trial</button>
+        </div>
+      </nav>
+
+      <main>
+        <section id="home" class="heroSection landingSection">
+          <div class="heroCopy motionItem">
+            <div class="eyebrow">Enterprise meeting intelligence</div>
+            <h1>Your AI Assistant for High-Stakes Meetings</h1>
+            <p>OrbyneCUE listens, understands, and delivers accurate answers in real time using your own documents, helping you respond confidently during meetings, interviews, and customer conversations.</p>
+            <div class="heroButtons">
+              <button type="button" class="primaryCta" data-auth-open>Start 1-Hour Free Trial</button>
+              <a class="secondaryCta" href="#contact">Request Demo</a>
+            </div>
+          </div>
+
+          <div class="appPreview motionItem" aria-label="Animated ORBYNECUE application preview">
+            <div class="previewChrome">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+            <div class="previewGrid">
+              <article class="glassPanel transcriptPanel floatingPanel">
+                <div class="panelLabel">Live Transcript</div>
+                <p><span>VP Sales:</span> Can we support an enterprise rollout in under 30 days?</p>
+                <p><span>Customer:</span> Include evidence from our security review.</p>
+              </article>
+              <article class="glassPanel answerPanel floatingPanel">
+                <div class="panelLabel">AI Answer</div>
+                <h2>Yes. The onboarding plan supports a 21-day launch with staged SSO, workspace mapping, and admin training.</h2>
+                <div class="citation">Source: Implementation Guide.pdf - Page 8</div>
+              </article>
+              <article class="glassPanel waveformPanel floatingPanel" aria-label="Audio waveform">
+                <div class="panelLabel">Meeting Audio</div>
+                <div class="waveform" aria-hidden="true">
+                  <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                </div>
+              </article>
+              <article class="glassPanel docPanel floatingPanel">
+                <div class="panelLabel">Citation Match</div>
+                <strong>Security controls</strong>
+                <p>Data remains grounded in approved customer documents.</p>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section id="demo" class="landingSection productDemo motionItem">
+          <div class="sectionHeading">
+            <span>Product Demo</span>
+            <h2>Real-time answers, grounded in your knowledge.</h2>
+            <p>Bring meeting audio and documents together in one focused workspace for crisp responses when the stakes are high.</p>
+          </div>
+          <div class="demoCanvas glassPanel">
+            <div class="demoColumn">
+              <div class="miniTitle">Question detected</div>
+              <p>“What does our SLA say about priority-one response?”</p>
+            </div>
+            <div class="demoColumn emphasized">
+              <div class="miniTitle">ORBYNECUE response</div>
+              <p>Priority-one incidents receive acknowledgement within 15 minutes and continuous updates until resolution.</p>
+            </div>
+            <div class="demoColumn">
+              <div class="miniTitle">Document citation</div>
+              <p>MSA_Service_Terms.pdf - Page 12</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="landingSection motionItem">
+          <div class="sectionHeading">
+            <span>How It Works</span>
+            <h2>From conversation to confident answer.</h2>
+          </div>
+          <div class="cardGrid three">
+            <article class="glassCard"><div class="iconDot"></div><h3>Listen</h3><p>Capture meeting questions from shared audio or manual prompts.</p></article>
+            <article class="glassCard"><div class="iconDot cyan"></div><h3>Retrieve</h3><p>Search your uploaded documents for the strongest supporting context.</p></article>
+            <article class="glassCard"><div class="iconDot purple"></div><h3>Respond</h3><p>Deliver concise answers with citations so every response is defensible.</p></article>
+          </div>
+        </section>
+
+        <section class="landingSection motionItem">
+          <div class="sectionHeading">
+            <span>Features</span>
+            <h2>Built for fast-moving expert conversations.</h2>
+          </div>
+          <div class="cardGrid">
+            <article class="glassCard"><h3>Live transcript</h3><p>See important meeting context as it arrives.</p></article>
+            <article class="glassCard"><h3>Document-grounded answers</h3><p>Responses stay anchored to your own approved materials.</p></article>
+            <article class="glassCard"><h3>Citations</h3><p>Trace answers back to files and page references.</p></article>
+            <article class="glassCard"><h3>Meeting memory</h3><p>Keep recent context available while the conversation unfolds.</p></article>
+          </div>
+        </section>
+
+        <section class="landingSection motionItem">
+          <div class="sectionHeading">
+            <span>Industries</span>
+            <h2>Designed for teams where accuracy matters.</h2>
+          </div>
+          <div class="pillGrid">
+            <span>Sales Engineering</span>
+            <span>Customer Success</span>
+            <span>Consulting</span>
+            <span>Legal Reviews</span>
+            <span>Hiring Interviews</span>
+            <span>Support Escalations</span>
+          </div>
+        </section>
+
+        <section id="pricing" class="landingSection pricingSection motionItem">
+          <div class="sectionHeading">
+            <span>Pricing</span>
+            <h2>Start with a focused trial.</h2>
+            <p>Evaluate OrbyneCUE in a real meeting with the demo account, then request a tailored rollout plan.</p>
+          </div>
+          <div class="pricingCard glassPanel">
+            <div>
+              <span class="planLabel">Free Trial</span>
+              <strong>1 hour</strong>
+              <p>Includes live audio capture, document upload, retrieval, and cited answers.</p>
+            </div>
+            <button type="button" class="primaryCta" data-auth-open>Start Free Trial</button>
+          </div>
+        </section>
+
+        <section class="landingSection motionItem">
+          <div class="sectionHeading">
+            <span>FAQ</span>
+            <h2>Questions leaders ask first.</h2>
+          </div>
+          <div class="faqList">
+            <details class="glassCard" open><summary>Does it use our own documents?</summary><p>Yes. Answers are retrieved from the documents you upload into the workspace.</p></details>
+            <details class="glassCard"><summary>Can I try it without registration?</summary><p>Yes. Use the included demo account to enter the existing dashboard.</p></details>
+            <details class="glassCard"><summary>Does the dashboard change?</summary><p>No. The authenticated dashboard remains the same operational workspace.</p></details>
+          </div>
+        </section>
+
+        <section id="contact" class="landingSection contactSection motionItem">
+          <div class="glassPanel contactPanel">
+            <div>
+              <span>Contact</span>
+              <h2>Request a tailored demo.</h2>
+              <p>Share your meeting workflow and document needs with the OrbyneCUE team.</p>
+            </div>
+            <a class="secondaryCta" href="mailto:demo@orbynecue.com">demo@orbynecue.com</a>
+          </div>
+        </section>
+      </main>
+
+      <footer class="landingFooter">
+        <strong>ORBYNECUE</strong>
+        <span>AI answers for high-stakes meetings.</span>
+      </footer>
+    </div>
+
+    <section id="loginView" class="loginView" hidden aria-label="ORBYNECUE login">
+      <div class="loginShell">
+        <a class="landingLogo" href="#home" data-login-back>ORBYNECUE</a>
+        <form id="loginForm" class="loginCard glassPanel">
+          <span>Demo Access</span>
+          <h1>Welcome back</h1>
+          <p>Use the demo account to enter the existing ORBYNECUE dashboard.</p>
+          <label>
+            Email
+            <input id="loginEmail" type="email" autocomplete="email" value="demo@orbynecue.com" required>
+          </label>
+          <label>
+            Password
+            <input id="loginPassword" type="password" autocomplete="current-password" value="Demo@123" required>
+          </label>
+          <button type="submit" class="primaryCta">Login</button>
+          <div id="loginError" class="loginError" role="alert"></div>
+        </form>
+      </div>
+    </section>
+
+    <div class="appShell" hidden>
       <aside class="sidebar" aria-label="ORBYNECUE navigation">
         <button id="newChat" type="button" class="newChatButton">New Chat</button>
 
@@ -33,6 +224,7 @@
         </section>
 
         <div class="sidebarFooter">
+          <button id="homeButton" type="button" class="ghostButton homeButton">Home</button>
           <button id="settingsButton" type="button" class="ghostButton">Settings</button>
           <button id="clearHistory" type="button" class="ghostButton">Clear Chat</button>
         </div>
@@ -44,6 +236,7 @@
             <button id="startRecording" type="button">Start Rec</button>
             <button id="stopRecording" type="button" class="danger" disabled>Stop Rec</button>
           </div>
+          <span id="trialTimer" class="statusPill trialTimer" role="timer" aria-label="Trial time remaining">Trial 01:00:00</span>
           <span id="connectionStatus" class="statusPill neutral">Checking backend</span>
           <span id="audioSharedStatus" class="statusPill neutral">Audio Not Shared</span>
           <span id="listeningStatus" class="statusPill neutral">Idle</span>
@@ -57,20 +250,6 @@
           <p>Meeting questions, document context, and AI answers from live meeting audio and uploaded knowledge sources.</p>
 
           <div class="audioControls" aria-label="Meeting audio controls">
-            <label class="languageControl" for="audioLanguage">
-              <span>Audio language</span>
-              <select id="audioLanguage">
-                <option value="auto">All languages</option>
-                <option value="en">English</option>
-                <option value="hi">Hindi</option>
-                <option value="es">Spanish</option>
-                <option value="fr">French</option>
-                <option value="de">German</option>
-                <option value="ar">Arabic</option>
-                <option value="zh">Chinese</option>
-                <option value="ja">Japanese</option>
-              </select>
-            </label>
             <div class="shareRow">
               <button id="startMeetingAudio" type="button">Share Audio</button>
               <button id="stopMeetingAudio" type="button" class="secondary" disabled>Stop Audio</button>
@@ -104,6 +283,9 @@
       </main>
     </div>
 
-    <script src="assets/app.js?v=20260612-3"></script>
+    <script src="assets/vendor/react.production.min.js"></script>
+    <script src="assets/vendor/react-dom.production.min.js"></script>
+    <script src="assets/vendor/framer-motion.js"></script>
+    <script src="assets/app.js?v=20260619-home-button"></script>
   </body>
 </html>
