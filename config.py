@@ -77,3 +77,28 @@ def vosk_model_path() -> Path:
         return bundled_repo_path
 
     return default_path
+
+
+def ensure_vosk_model_path() -> Path:
+    model_path = vosk_model_path()
+    if model_path.exists():
+        return model_path
+
+    try:
+        from scripts.ensure_vosk_model import has_vosk_model
+        from scripts.ensure_vosk_model import main as ensure_vosk_model
+    except ImportError as exc:
+        raise RuntimeError(
+            "Vosk model not found and the automatic downloader is unavailable. "
+            f"Download it to {model_path} or set ORBYNE_VOSK_MODEL_PATH."
+        ) from exc
+
+    ensure_vosk_model()
+    model_path = vosk_model_path()
+    if has_vosk_model(model_path):
+        return model_path
+
+    raise RuntimeError(
+        "Vosk model not found after automatic download. "
+        f"Expected it at {model_path} or set ORBYNE_VOSK_MODEL_PATH."
+    )

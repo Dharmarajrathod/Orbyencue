@@ -21,10 +21,10 @@ from pydantic import BaseModel, Field
 
 try:
     from config import load_environment
-    from config import vosk_model_path
+    from config import ensure_vosk_model_path
 except ImportError:
     load_environment = None
-    vosk_model_path = None
+    ensure_vosk_model_path = None
 
 from processing_pipeline import clean_transcript, is_meaningful_question_or_request
 
@@ -266,10 +266,10 @@ class VoskStreamingSession:
             raise RuntimeError("Vosk is not installed for streaming speech-to-text.") from exc
 
         global STREAMING_VOSK_MODEL
-        if vosk_model_path is None:
+        if ensure_vosk_model_path is None:
             raise RuntimeError("Vosk model path helper is unavailable.")
 
-        model_path = vosk_model_path()
+        model_path = ensure_vosk_model_path()
         if not model_path.exists():
             raise RuntimeError(f"Vosk model not found: {model_path}")
 

@@ -4,7 +4,7 @@ import queue
 import threading
 import time
 
-from config import google_credentials_path, vosk_model_path
+from config import ensure_vosk_model_path, google_credentials_path
 
 
 class StreamingTranscriber:
@@ -46,7 +46,7 @@ class StreamingTranscriber:
         except ImportError as exc:
             raise RuntimeError("Vosk is required for free local speech recognition. Run: python -m pip install -r requirements.txt") from exc
 
-        model_path = vosk_model_path()
+        model_path = ensure_vosk_model_path()
         if not model_path.exists():
             raise RuntimeError(
                 "Vosk model not found. Download it to "

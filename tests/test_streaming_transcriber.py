@@ -12,6 +12,30 @@ def test_vosk_model_path_falls_back_to_checked_in_model(monkeypatch, tmp_path):
     assert config.vosk_model_path() == fallback_model
 
 
+def test_ensure_vosk_model_path_downloads_missing_model(monkeypatch, tmp_path):
+    import config
+    import scripts.ensure_vosk_model
+
+    monkeypatch.delenv("ORBYNE_VOSK_MODEL_PATH", raising=False)
+    monkeypatch.setattr(config, "resource_path", lambda relative_path: tmp_path / relative_path)
+
+    def fake_download():
+        model_path = tmp_path / "models/vosk-model-small-en-us-0.15"
+        for relative_file in [
+            "am/final.mdl",
+            "conf/model.conf",
+            "graph/HCLr.fst",
+            "graph/Gr.fst",
+        ]:
+            file_path = model_path / relative_file
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text("ok")
+
+    monkeypatch.setattr(scripts.ensure_vosk_model, "main", fake_download)
+
+    assert config.ensure_vosk_model_path() == tmp_path / "models/vosk-model-small-en-us-0.15"
+
+
 def test_streaming_stt_requires_sessioned_wav_chunks():
     from app import should_use_streaming_stt
 
