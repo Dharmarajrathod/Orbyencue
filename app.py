@@ -83,6 +83,8 @@ STREAMING_STT_SESSIONS = {}
 STREAMING_STT_LOCK = threading.Lock()
 STREAMING_STT_TTL_SECONDS = 15 * 60
 STREAMING_VOSK_MODEL = None
+GEMINI_STT_CLIENT = None
+DEFAULT_GEMINI_STT_MODEL = "gemini-2.5-flash-lite"
 
 
 def get_allowed_origins():
@@ -256,6 +258,46 @@ def decode_wav_pcm16(audio_bytes: bytes) -> tuple[bytes, int]:
         mono[write_offset : write_offset + 2] = sample.to_bytes(2, "little", signed=True)
         write_offset += 2
     return bytes(mono), sample_rate
+
+
+def has_gemini_stt_key() -> bool:
+    return bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+
+
+def transcribe_audio_with_gemini(audio_bytes: bytes, mime_type: str = "audio/wav") -> dict:
+    global GEMINI_STT_CLIENT
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is required for Gemini meeting transcription.")
+
+    if GEMINI_STT_CLIENT is None:
+        from google import genai
+
+        GEMINI_STT_CLIENT = genai.Client(api_key=api_key)
+
+    from google.genai import types
+
+    model = os.getenv("GEMINI_STT_MODEL", DEFAULT_GEMINI_STT_MODEL)
+    response = GEMINI_STT_CLIENT.models.generate_content(
+        model=model,
+        contents=[
+            "Transcribe only the clearly spoken English words in this meeting audio. "
+            "Return only the transcript text. If no speech is clear, return an empty string.",
+            types.Part.from_bytes(data=audio_bytes, mime_type=mime_type or "audio/wav"),
+        ],
+    )
+    transcript = clean_transcript((getattr(response, "text", "") or "").strip())
+    return {
+        "speechDetected": bool(transcript),
+        "language": "english" if transcript else "unknown",
+        "iso639_1": "en" if transcript else "unknown",
+        "languageConfidence": 0.9 if transcript else 0.0,
+        "transcript": transcript,
+        "transcriptionConfidence": 0.85 if transcript else 0.0,
+        "meaningful": is_meaningful_question_or_request(transcript) if transcript else False,
+        "model": f"gemini/{model}",
+        "isFinal": True,
+    }
 
 
 class VoskStreamingSession:
@@ -552,7 +594,27 @@ async def transcribe_meeting_audio(
             raise RuntimeError("Meeting audio speech-to-text requires sessioned 16 kHz WAV chunks.")
 
         stt_started_at = time.time()
-        result = transcribe_streaming_audio(audio_bytes, session_id, final_chunk=final_chunk)
+        meeting_stt_provider = os.getenv("ORBYNE_MEETING_STT_PROVIDER", "gemini").strip().lower()
+        if meeting_stt_provider == "gemini" and has_gemini_stt_key():
+            try:
+                result = transcribe_audio_with_gemini(audio_bytes, "audio/wav")
+            except Exception as gemini_exc:
+                logger.warning("Gemini meeting transcription failed; falling back to Vosk: %s", gemini_exc)
+                result = transcribe_streaming_audio(audio_bytes, session_id, final_chunk=final_chunk)
+                result["model"] = f'{result["model"]}+gemini-fallback'
+        elif meeting_stt_provider == "gemini":
+            result = transcribe_streaming_audio(audio_bytes, session_id, final_chunk=final_chunk)
+            result["model"] = f'{result["model"]}+gemini-unavailable'
+        else:
+            result = transcribe_streaming_audio(audio_bytes, session_id, final_chunk=final_chunk)
+
+            if (
+                meeting_stt_provider in {"auto", "vosk-gemini", "hybrid"}
+                and voice_activity
+                and not (result.get("transcript") or "").strip()
+                and has_gemini_stt_key()
+            ):
+                result = transcribe_audio_with_gemini(audio_bytes, "audio/wav")
         streaming_stt_ms = round((time.time() - stt_started_at) * 1000, 2)
         stage_timings["speechToTextMs"] = streaming_stt_ms
         stage_timings["streamingSttMs"] = streaming_stt_ms
