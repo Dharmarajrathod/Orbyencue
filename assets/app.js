@@ -50,8 +50,8 @@ const DEMO_CREDENTIALS = {
 const DEFAULT_LOCAL_BACKEND_URL = "http://127.0.0.1:8000";
 const DOCUMENT_MATCH_THRESHOLD = 40;
 const MAX_LOCAL_ANSWER_WORDS = 180;
-const MEETING_AUDIO_SEGMENT_MS = 3000;
-const MEETING_AUDIO_FIRST_CHUNK_MS = 2500;
+const MEETING_AUDIO_SEGMENT_MS = 1500;
+const MEETING_AUDIO_FIRST_CHUNK_MS = 1200;
 const MEETING_AUDIO_OVERLAP_MS = 0;
 const MEETING_AUDIO_TARGET_SAMPLE_RATE = 16000;
 const MEETING_AUDIO_PROCESSOR_SIZE = 4096;
@@ -1025,6 +1025,8 @@ async function sendMeetingAudioChunk(blob, meta = {}) {
         setMeetingAudioStatus("STT heard audio but found no clear words");
       } else if (payload.reason === "implausible_transcript") {
         setMeetingAudioStatus("STT rejected an uncertain transcript");
+      } else if (payload.reason === "stt_unavailable") {
+        setMeetingAudioStatus(meetingListening ? "Listening..." : "Audio shared");
       } else {
         setMeetingAudioStatus(`STT skipped audio: ${payload.reason || "unknown reason"}`);
       }

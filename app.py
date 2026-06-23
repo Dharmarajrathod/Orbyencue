@@ -594,7 +594,7 @@ async def transcribe_meeting_audio(
             raise RuntimeError("Meeting audio speech-to-text requires sessioned 16 kHz WAV chunks.")
 
         stt_started_at = time.time()
-        meeting_stt_provider = os.getenv("ORBYNE_MEETING_STT_PROVIDER", "gemini").strip().lower()
+        meeting_stt_provider = os.getenv("ORBYNE_MEETING_STT_PROVIDER", "vosk").strip().lower()
         if meeting_stt_provider == "gemini" and has_gemini_stt_key():
             try:
                 result = transcribe_audio_with_gemini(audio_bytes, "audio/wav")
@@ -614,7 +614,11 @@ async def transcribe_meeting_audio(
                 and not (result.get("transcript") or "").strip()
                 and has_gemini_stt_key()
             ):
-                result = transcribe_audio_with_gemini(audio_bytes, "audio/wav")
+                try:
+                    result = transcribe_audio_with_gemini(audio_bytes, "audio/wav")
+                except Exception as gemini_exc:
+                    logger.warning("Gemini hybrid transcription fallback failed: %s", gemini_exc)
+                    result["model"] = f'{result["model"]}+gemini-fallback-unavailable'
         streaming_stt_ms = round((time.time() - stt_started_at) * 1000, 2)
         stage_timings["speechToTextMs"] = streaming_stt_ms
         stage_timings["streamingSttMs"] = streaming_stt_ms
@@ -704,7 +708,22 @@ async def transcribe_meeting_audio(
             started_at=started_at,
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        logger.warning("Meeting transcription skipped after STT error: %s", exc)
+        stage_timings["totalBackendMs"] = round((time.time() - started_at) * 1000, 2)
+        return transcript_response(
+            transcript="",
+            model="speech-to-text",
+            chunk_number=chunk_number,
+            chunk_size=len(audio_bytes),
+            duration=duration,
+            sample_rate=sample_rate,
+            audio_energy=audio_energy,
+            voice_activity=voice_activity,
+            discarded=True,
+            reason="stt_unavailable",
+            stage_timings=stage_timings,
+            started_at=started_at,
+        )
 
 
 if __name__ == "__main__":
