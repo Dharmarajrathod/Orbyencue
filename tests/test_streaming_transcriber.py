@@ -12,6 +12,18 @@ def test_vosk_model_path_falls_back_to_checked_in_model(monkeypatch, tmp_path):
     assert config.vosk_model_path() == fallback_model
 
 
+def test_vosk_model_path_uses_configured_model_name(monkeypatch, tmp_path):
+    import config
+
+    monkeypatch.delenv("ORBYNE_VOSK_MODEL_PATH", raising=False)
+    monkeypatch.setenv("ORBYNE_VOSK_MODEL_NAME", "custom-vosk-model")
+    monkeypatch.setattr(config, "resource_path", lambda relative_path: tmp_path / relative_path)
+    configured_model = tmp_path / "models/custom-vosk-model"
+    configured_model.mkdir(parents=True)
+
+    assert config.vosk_model_path() == configured_model
+
+
 def test_ensure_vosk_model_path_downloads_missing_model(monkeypatch, tmp_path):
     import config
     import scripts.ensure_vosk_model
@@ -20,7 +32,7 @@ def test_ensure_vosk_model_path_downloads_missing_model(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "resource_path", lambda relative_path: tmp_path / relative_path)
 
     def fake_download():
-        model_path = tmp_path / "models/vosk-model-small-en-us-0.15"
+        model_path = tmp_path / "models/vosk-model-en-us-0.22-lgraph"
         for relative_file in [
             "am/final.mdl",
             "conf/model.conf",
@@ -33,7 +45,7 @@ def test_ensure_vosk_model_path_downloads_missing_model(monkeypatch, tmp_path):
 
     monkeypatch.setattr(scripts.ensure_vosk_model, "main", fake_download)
 
-    assert config.ensure_vosk_model_path() == tmp_path / "models/vosk-model-small-en-us-0.15"
+    assert config.ensure_vosk_model_path() == tmp_path / "models/vosk-model-en-us-0.22-lgraph"
 
 
 def test_streaming_stt_requires_sessioned_wav_chunks():

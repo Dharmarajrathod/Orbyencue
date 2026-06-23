@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 
 APP_NAME = "OrbyneAI"
+DEFAULT_VOSK_MODEL_NAME = "vosk-model-en-us-0.22-lgraph"
 LICENSE_BACKEND_URL = os.getenv(
     "ORBYNE_LICENSE_BACKEND_URL",
     "https://cvolvepro.com/orbyneai/api/verify-license",
@@ -68,7 +69,9 @@ def vosk_model_path() -> Path:
     if explicit_path:
         return Path(explicit_path)
 
-    default_path = resource_path("models/vosk-model-small-en-us-0.15")
+    model_name = os.getenv("ORBYNE_VOSK_MODEL_NAME", DEFAULT_VOSK_MODEL_NAME)
+
+    default_path = resource_path(f"models/{model_name}")
     if default_path.exists():
         return default_path
 
