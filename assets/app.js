@@ -50,13 +50,13 @@ const DEMO_CREDENTIALS = {
 const DEFAULT_LOCAL_BACKEND_URL = "http://127.0.0.1:8000";
 const DOCUMENT_MATCH_THRESHOLD = 40;
 const MAX_LOCAL_ANSWER_WORDS = 180;
-const MEETING_AUDIO_SEGMENT_MS = 1500;
-const MEETING_AUDIO_FIRST_CHUNK_MS = 1200;
-const MEETING_AUDIO_OVERLAP_MS = 0;
+const MEETING_AUDIO_SEGMENT_MS = 650;
+const MEETING_AUDIO_FIRST_CHUNK_MS = 350;
+const MEETING_AUDIO_OVERLAP_MS = 200;
 const MEETING_AUDIO_TARGET_SAMPLE_RATE = 16000;
-const MEETING_AUDIO_PROCESSOR_SIZE = 4096;
+const MEETING_AUDIO_PROCESSOR_SIZE = 2048;
 const MEETING_AUDIO_RMS_THRESHOLD = 0.0008;
-const MEETING_MIN_SPEECH_SECONDS_PER_CHUNK = 0.01;
+const MEETING_MIN_SPEECH_SECONDS_PER_CHUNK = 0.005;
 const MIN_MEETING_AUTO_ANSWER_WORDS = 5;
 const RECENT_TRANSCRIPT_CACHE_LIMIT = 128;
 const TRIAL_DURATION_MS = 60 * 60 * 1000;
@@ -92,6 +92,7 @@ let meetingAudioActiveRecently = false;
 let meetingAudioPeakSinceLastChunk = 0;
 let meetingAudioDebugLog = [];
 let meetingSilentChunkCount = 0;
+let meetingAudioHadSpeechSinceLastFinal = false;
 let meetingLastChunkAt = 0;
 let meetingProcessorWatchdogTimer = null;
 let meetingCurrentInputStream = null;
@@ -109,6 +110,7 @@ let meetingRecording = false;
 let meetingRecorderGeneration = 0;
 let meetingTranscript = [];
 let displayedMeetingTranscript = [];
+let meetingLivePartialTranscript = "";
 let currentRecordingUrl = "";
 let recentTranscriptHashes = [];
 let recentDisplayedTranscriptHashes = [];
@@ -202,7 +204,11 @@ function showLiveTranscript(text) {
 }
 
 function renderLiveTranscript() {
-  const transcript = displayedMeetingTranscript.slice(-6).join(" ").trim();
+  const segments = displayedMeetingTranscript.slice(-6);
+  if (meetingLivePartialTranscript) {
+    segments.push(meetingLivePartialTranscript);
+  }
+  const transcript = segments.join(" ").trim();
   showLiveTranscript(transcript ? `Shared audio: ${transcript}` : "");
 }
 
@@ -928,6 +934,21 @@ function encodeWavPcm16(samples, sampleRate) {
   return new Blob([buffer], { type: "audio/wav" });
 }
 
+async function decodeAudioBlobToMono(blob) {
+  const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+  const audioContext = new AudioContextConstructor();
+  try {
+    const arrayBuffer = await blob.arrayBuffer();
+    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+    return {
+      samples: mixInputBufferToMono(audioBuffer),
+      sampleRate: audioBuffer.sampleRate
+    };
+  } finally {
+    audioContext.close();
+  }
+}
+
 function compactTranscriptForAnalysis(text, maxCharacters = 14000) {
   const cleanText = text.replace(/\s+/g, " ").trim();
   if (cleanText.length <= maxCharacters) {
@@ -988,6 +1009,7 @@ async function sendMeetingAudioChunk(blob, meta = {}) {
     }
 
     const transcript = (payload.transcript || "").trim();
+    const isFinalTranscript = payload.isFinal !== false;
     const backendTimings = payload.stageTimings || {};
     logAudioStage({
       stage: "backend-result",
@@ -1001,6 +1023,7 @@ async function sendMeetingAudioChunk(blob, meta = {}) {
       detectedLanguage: payload.language || "unknown",
       languageConfidence: payload.languageConfidence || 0,
       transcript,
+      isFinal: isFinalTranscript,
       transcriptConfidence: payload.transcriptionConfidence || 0,
       answerSource: "",
       latency: payload.latencyMs || 0,
@@ -1018,6 +1041,11 @@ async function sendMeetingAudioChunk(blob, meta = {}) {
       totalBackendMs: payload.latencyMs || 0
     });
 
+    if ((isFinalTranscript || meta.finalChunk) && !transcript && meetingLivePartialTranscript) {
+      meetingLivePartialTranscript = "";
+      renderLiveTranscript();
+    }
+
     if (payload.discarded) {
       if (payload.reason === "low_transcription_confidence") {
         setMeetingAudioStatus(`STT ignored unclear speech (${Math.round((payload.transcriptionConfidence || 0) * 100)}%)`);
@@ -1034,20 +1062,26 @@ async function sendMeetingAudioChunk(blob, meta = {}) {
     }
 
     if (transcript) {
-      setMeetingAudioStatus("Text ready. Searching documents...");
+      if (!isFinalTranscript) {
+        meetingLivePartialTranscript = transcript;
+        renderLiveTranscript();
+        setMeetingAudioStatus("Listening... converting speech to text");
+        return;
+      }
+
+      meetingLivePartialTranscript = "";
+      setMeetingAudioStatus(meta.suppressAnswer ? "Text ready" : "Text ready. Searching documents...");
       const duplicateDisplay = hasRecentlyDisplayedTranscript(transcript);
-      if (!meetingRecording && !duplicateDisplay) {
+      if (!duplicateDisplay) {
         displayedMeetingTranscript.push(transcript);
         displayedMeetingTranscript = displayedMeetingTranscript.slice(-20);
-        renderLiveTranscript();
-      }
-      if (!duplicateDisplay) {
         meetingTranscript.push(transcript);
         meetingTranscript = meetingTranscript.slice(-20);
         saveMeetingContext();
+        renderLiveTranscript();
       }
       const normalized = transcript.toLowerCase();
-      if (!meetingRecording && normalized !== lastMeetingAnswerText) {
+      if (!meta.suppressAnswer && !meetingRecording && normalized !== lastMeetingAnswerText) {
         lastMeetingAnswerText = normalized;
         await answerQuestion(transcript, {
           fromMeetingAudio: true,
@@ -1173,6 +1207,12 @@ async function processSharedAudioChunk() {
     const probableVoiceActivity = peak >= MEETING_AUDIO_RMS_THRESHOLD
       && speechSeconds >= MEETING_MIN_SPEECH_SECONDS_PER_CHUNK
       && rms >= MEETING_AUDIO_RMS_THRESHOLD / 3;
+    const finalChunk = !probableVoiceActivity && meetingAudioHadSpeechSinceLastFinal;
+    if (probableVoiceActivity) {
+      meetingAudioHadSpeechSinceLastFinal = true;
+    } else if (finalChunk) {
+      meetingAudioHadSpeechSinceLastFinal = false;
+    }
     const vadMs = performance.now() - vadStartedAt;
     const baseLog = {
       stage: "vad",
@@ -1219,6 +1259,7 @@ async function processSharedAudioChunk() {
       sampleRate: MEETING_AUDIO_TARGET_SAMPLE_RATE,
       audioEnergy: rms,
       voiceActivity: probableVoiceActivity,
+      finalChunk,
       captureMs: Math.round(duration * 1000),
       vadMs,
       questionEndedAt: performance.now()
@@ -1280,7 +1321,10 @@ async function startSharedAudioProcessor(stream = meetingSharedAudioStream, mode
   meetingAudioPeakSinceLastChunk = 0;
   meetingAudioChunkNumber = 0;
   meetingSilentChunkCount = 0;
+  meetingAudioHadSpeechSinceLastFinal = false;
   meetingAudioChunkProcessing = false;
+  meetingLivePartialTranscript = "";
+  renderLiveTranscript();
 
   const targetSamplesPerChunk = Math.round(meetingAudioContext.sampleRate * (MEETING_AUDIO_SEGMENT_MS / 1000));
   const firstSpeechTargetSamples = Math.round(meetingAudioContext.sampleRate * (MEETING_AUDIO_FIRST_CHUNK_MS / 1000));
@@ -1336,6 +1380,8 @@ function stopSharedAudioProcessor() {
 
 function endSharedAudioSession(statusText = "Audio sharing ended") {
   meetingListening = false;
+  meetingLivePartialTranscript = "";
+  renderLiveTranscript();
   meetingRecorderGeneration += 1;
   stopSharedAudioProcessor();
   meetingAudioShared = false;
@@ -1433,6 +1479,8 @@ async function startListeningSession() {
   }
   transcriptionPausedUntil = 0;
   meetingListening = true;
+  meetingLivePartialTranscript = "";
+  renderLiveTranscript();
   meetingAudioSessionId = createMeetingAudioSessionId();
   meetingRecorderGeneration += 1;
   if (hasActiveSharedAudio()) {
@@ -1452,6 +1500,8 @@ async function startListeningSession() {
 
 function stopListeningSession({ keepStatus = false, discardFinalChunk = false } = {}) {
   meetingListening = false;
+  meetingLivePartialTranscript = "";
+  renderLiveTranscript();
   stopSharedAudioProcessor();
   meetingAudioSessionId = "";
   meetingRecorderGeneration += 1;
@@ -1512,9 +1562,11 @@ async function stopRecordingSession() {
     });
   }
   micRecorder = null;
+  let recordingBlob = null;
   if (micRecordingParts.length) {
     const mimeType = micRecordingParts[0]?.type || getSupportedAudioMimeType() || "audio/webm";
-    renderRecordingPlayback(new Blob(micRecordingParts, { type: mimeType }));
+    recordingBlob = new Blob(micRecordingParts, { type: mimeType });
+    renderRecordingPlayback(recordingBlob);
   }
   micRecordingParts = [];
 
@@ -1526,6 +1578,50 @@ async function stopRecordingSession() {
   setMeetingAudioStatus(meetingListening ? "Listening..." : meetingAudioShared ? "Audio shared" : "Not shared");
   updateAudioStatus();
   updateContextIndicator();
+
+  if (recordingBlob) {
+    await transcribeRecordingBlob(recordingBlob);
+  }
+}
+
+async function transcribeRecordingBlob(recordingBlob) {
+  if (!recordingBlob?.size) {
+    return;
+  }
+
+  setMeetingAudioStatus("Transcribing recording...");
+  const transcriptCountBefore = meetingTranscript.length;
+  const { samples, sampleRate } = await decodeAudioBlobToMono(recordingBlob);
+  if (!samples.length || !sampleRate) {
+    setMeetingAudioStatus("Recording had no audio to transcribe");
+    return;
+  }
+
+  const sessionId = createMeetingAudioSessionId();
+  const sourceSamplesPerChunk = Math.round(sampleRate * (MEETING_AUDIO_SEGMENT_MS / 1000));
+  const totalChunks = Math.ceil(samples.length / sourceSamplesPerChunk);
+  for (let index = 0; index < totalChunks; index += 1) {
+    const start = index * sourceSamplesPerChunk;
+    const end = Math.min(samples.length, start + sourceSamplesPerChunk);
+    const chunk = samples.slice(start, end);
+    const rms = calculateRms(chunk);
+    const resampled = resampleLinear(chunk, sampleRate, MEETING_AUDIO_TARGET_SAMPLE_RATE);
+    const wavBlob = encodeWavPcm16(resampled, MEETING_AUDIO_TARGET_SAMPLE_RATE);
+    await sendMeetingAudioChunk(wavBlob, {
+      chunkNumber: index + 1,
+      sessionId,
+      duration: chunk.length / sampleRate,
+      sampleRate: MEETING_AUDIO_TARGET_SAMPLE_RATE,
+      audioEnergy: rms,
+      voiceActivity: rms >= MEETING_AUDIO_RMS_THRESHOLD / 3,
+      finalChunk: index === totalChunks - 1,
+      suppressAnswer: true,
+      captureMs: Math.round((chunk.length / sampleRate) * 1000),
+      questionEndedAt: performance.now()
+    });
+  }
+
+  setMeetingAudioStatus(meetingTranscript.length > transcriptCountBefore ? "Recording transcribed" : "No clear speech found in recording");
 }
 
 async function stopMeetingAudioSession() {

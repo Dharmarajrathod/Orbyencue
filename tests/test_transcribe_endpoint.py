@@ -42,3 +42,42 @@ def test_transcribe_endpoint_skips_transient_stt_errors(monkeypatch):
     payload = response.json()
     assert payload["discarded"] is True
     assert payload["reason"] == "stt_unavailable"
+
+
+def test_transcribe_endpoint_returns_partial_streaming_text(monkeypatch):
+    def partial_transcription(*args, **kwargs):
+        return {
+            "speechDetected": True,
+            "language": "english",
+            "iso639_1": "en",
+            "languageConfidence": 0.7,
+            "transcript": "what is",
+            "transcriptionConfidence": 0.65,
+            "meaningful": False,
+            "model": "vosk/streaming-partial",
+            "isFinal": False,
+        }
+
+    monkeypatch.setenv("ORBYNE_MEETING_STT_PROVIDER", "vosk")
+    monkeypatch.setattr(app, "transcribe_streaming_audio", partial_transcription)
+
+    client = TestClient(app.app)
+    response = client.post(
+        "/transcribe-audio",
+        files={"file": ("chunk.wav", wav_bytes(), "audio/wav")},
+        data={
+            "language": "auto",
+            "session_id": "meeting-1",
+            "chunk_number": "1",
+            "duration": "0.1",
+            "sample_rate": "16000",
+            "audio_energy": "0.01",
+            "voice_activity": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["transcript"] == "what is"
+    assert payload["isFinal"] is False
+    assert payload["discarded"] is False

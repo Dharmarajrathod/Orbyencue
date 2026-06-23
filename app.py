@@ -57,6 +57,7 @@ class KnowledgeResponse(BaseModel):
 class TranscriptResponse(BaseModel):
     transcript: str
     model: str
+    isFinal: bool = True
     chunkNumber: int = 0
     chunkSize: int = 0
     duration: float = 0.0
@@ -449,6 +450,7 @@ def transcript_response(
     meaningful: bool = False,
     discarded: bool = False,
     reason: str = "",
+    is_final: bool = True,
     stage_timings: Optional[dict[str, float]] = None,
     started_at: float,
 ):
@@ -458,6 +460,7 @@ def transcript_response(
     response = TranscriptResponse(
         transcript=transcript,
         model=model,
+        isFinal=is_final,
         chunkNumber=chunk_number,
         chunkSize=chunk_size,
         duration=round(duration, 3),
@@ -630,6 +633,7 @@ async def transcribe_meeting_audio(
         speech_detected = bool(result["speechDetected"])
         meaningful = bool(result["meaningful"])
         transcribed = True
+        is_final = bool(result.get("isFinal", True))
 
         has_transcript_text = bool((transcript or "").strip())
         if not speech_detected and not has_transcript_text:
@@ -703,6 +707,7 @@ async def transcribe_meeting_audio(
             language_confidence=language_confidence,
             transcription_confidence=confidence,
             meaningful=meaningful,
+            is_final=is_final,
             reason="",
             stage_timings=stage_timings,
             started_at=started_at,
