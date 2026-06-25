@@ -273,6 +273,7 @@ function cleanTranscript(text) {
   cleanText = cleanText.replace(/\[[^\]]+\]|\([^\)]+\)/g, " ");
   cleanText = cleanText.replace(/\b(?:um+|uh+|ah+|erm|hmm|you know|like|okay|right)\b/gi, " ");
   cleanText = cleanText.replace(/\b(\w+)(?:\s+\1\b)+/gi, "$1");
+  cleanText = cleanText.replace(/\b(\w+\s+\w+\s+\w+)(?:\s+\1\b)+/gi, "$1");
   cleanText = cleanText.replace(/\s+/g, " ").replace(/^[\s.,;:-]+|[\s.,;:-]+$/g, "");
   if (text.trim().endsWith("?") && !cleanText.endsWith("?")) {
     cleanText += "?";
@@ -1059,6 +1060,10 @@ function splitMeetingTranscriptQuestions(text) {
   const cleanText = cleanTranscript(text);
   if (!cleanText) {
     return [];
+  }
+
+  if (/^(tell me about a time|describe a time|give me an example|talk about a time|tell me about an experience)\b/i.test(cleanText)) {
+    return shouldAnswerMeetingTranscript(cleanText) ? [cleanText] : [];
   }
 
   const marked = cleanText.replace(/\s+\b(what|why|how|when|where|who|which|tell|explain|describe|summarize|compare|show|give|find|list|calculate|analyze)\b/gi, "\n$1");
