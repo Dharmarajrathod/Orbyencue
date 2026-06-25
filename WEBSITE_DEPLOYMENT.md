@@ -28,15 +28,9 @@ http://127.0.0.1:8000
 
 ## Publish Online
 
-GitHub Pages can publish the static website, but it cannot run the Python backend.
+GitHub Pages can publish the static website, but it cannot run the Python backend. On GitHub Pages, backend features such as document upload and meeting transcription need a reachable backend URL.
 
-The GitHub Pages version automatically tries to use this local backend while you test:
-
-```text
-http://127.0.0.1:8000
-```
-
-So before using the GitHub Pages URL with Ollama, run:
+For local testing with Ollama, run:
 
 ```bash
 cd /Users/dharmarajrathod/Documents/ovy
@@ -44,6 +38,8 @@ export AI_PROVIDER=ollama
 export OLLAMA_MODEL=llama3.2
 /opt/homebrew/bin/python3.10 app.py
 ```
+
+Then open `http://127.0.0.1:8000`.
 
 For a fully public app, deploy this repository as a Render `Web Service` or point the frontend at another reachable backend.
 
@@ -55,9 +51,15 @@ Use:
 
 After deploy, open the Render URL. The website will work directly because the backend has the provider configuration.
 
+To use the GitHub Pages URL with a deployed backend, open the dashboard, click `Settings`, and save the backend URL, for example:
+
+```text
+https://your-render-service.onrender.com
+```
+
 For Ollama hosting, the deployed backend must be able to reach an Ollama server through `OLLAMA_BASE_URL`. A Render service cannot call Ollama running on your laptop at `127.0.0.1`.
 
-To use a custom hosted backend from the static site, set `window.ORBYNE_API_BASE_URL` before `assets/app.js` loads, or save `orbynecue.apiBaseUrl` in browser local storage.
+To hard-code a hosted backend for the static site, set `window.ORBYNE_PUBLIC_BACKEND_URL` or `window.ORBYNE_API_BASE_URL` before `assets/app.js` loads. The Settings dialog stores the same value in `orbynecue.apiBaseUrl` in browser local storage.
 
 ## Browser Notes
 

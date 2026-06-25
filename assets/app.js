@@ -47,7 +47,7 @@ const DEMO_CREDENTIALS = {
   password: "Demo@123"
 };
 
-const DEFAULT_LOCAL_BACKEND_URL = "http://127.0.0.1:8000";
+const PUBLIC_BACKEND_URL = window.ORBYNE_PUBLIC_BACKEND_URL || "";
 const DOCUMENT_MATCH_THRESHOLD = 40;
 const MAX_LOCAL_ANSWER_WORDS = 180;
 const MEETING_AUDIO_SEGMENT_MS = 650;
@@ -116,13 +116,9 @@ let recentTranscriptHashes = [];
 let recentDisplayedTranscriptHashes = [];
 
 function getApiBaseUrl() {
-  const configured = localStorage.getItem(STORAGE_KEYS.apiBaseUrl) || window.ORBYNE_API_BASE_URL || "";
+  const configured = localStorage.getItem(STORAGE_KEYS.apiBaseUrl) || window.ORBYNE_API_BASE_URL || PUBLIC_BACKEND_URL || "";
   if (configured.trim()) {
     return configured.trim().replace(/\/+$/, "");
-  }
-
-  if (window.location.hostname.endsWith("github.io")) {
-    return DEFAULT_LOCAL_BACKEND_URL;
   }
 
   return "";
@@ -131,6 +127,21 @@ function getApiBaseUrl() {
 function apiUrl(path) {
   const baseUrl = getApiBaseUrl();
   return baseUrl ? `${baseUrl}${path}` : path;
+}
+
+function isStaticPublicSite() {
+  return window.location.hostname.endsWith("github.io");
+}
+
+function hasBackendTarget() {
+  return Boolean(getApiBaseUrl() || !isStaticPublicSite());
+}
+
+function requireBackendTarget(action) {
+  if (hasBackendTarget()) {
+    return true;
+  }
+  throw new Error(`${action} needs a backend URL. Open Settings and enter your deployed backend URL.`);
 }
 
 function setStatus(element, text, state = "neutral") {
@@ -755,6 +766,7 @@ async function uploadDocument(file) {
   setProcessing(true);
 
   try {
+    requireBackendTarget("Document upload");
     const formData = new FormData();
     formData.append("file", file);
     const response = await fetch(apiUrl("/knowledge"), {
@@ -986,6 +998,7 @@ async function sendMeetingAudioChunk(blob, meta = {}) {
 
   setProcessing(true);
   try {
+    requireBackendTarget("Meeting transcription");
     const formData = new FormData();
     formData.append("file", blob, getAudioFileName(blob.type || ""));
     formData.append("language", getSelectedAudioLanguage());
@@ -1642,13 +1655,39 @@ async function stopMeetingAudioSession() {
 }
 
 async function checkBackend() {
+  if (!hasBackendTarget()) {
+    setStatus(elements.connectionStatus, "Backend not configured", "error");
+    return;
+  }
+
   try {
     const response = await fetch(apiUrl("/health"));
+    if (!response.ok) {
+      throw new Error(`Backend health check failed with ${response.status}`);
+    }
     const payload = await response.json();
     setStatus(elements.connectionStatus, payload.externalAiEnabled === false ? "Documents only" : "Backend ready", "neutral");
   } catch (error) {
-    setStatus(elements.connectionStatus, window.location.hostname.endsWith("github.io") ? "Start local backend" : "Backend unavailable", "error");
+    setStatus(elements.connectionStatus, "Backend unavailable", "error");
   }
+}
+
+function configureBackendUrl() {
+  const currentUrl = getApiBaseUrl();
+  const nextUrl = window.prompt("Backend URL", currentUrl);
+  if (nextUrl === null) {
+    return;
+  }
+
+  const normalized = nextUrl.trim().replace(/\/+$/, "");
+  if (normalized) {
+    localStorage.setItem(STORAGE_KEYS.apiBaseUrl, normalized);
+    startCurrentAnswer(`Backend URL saved: ${normalized}`, "Settings");
+  } else {
+    localStorage.removeItem(STORAGE_KEYS.apiBaseUrl);
+    startCurrentAnswer("Backend URL cleared. Public GitHub Pages needs a deployed backend for uploads and transcription.", "Settings");
+  }
+  checkBackend();
 }
 
 function clearChat({ clearDocuments = false } = {}) {
@@ -1807,7 +1846,7 @@ elements.newChat.addEventListener("click", () => {
 });
 
 elements.settingsButton.addEventListener("click", () => {
-  startCurrentAnswer("Settings are managed through backend environment variables for this build.", "Settings");
+  configureBackendUrl();
 });
 
 elements.homeButton.addEventListener("click", () => {
