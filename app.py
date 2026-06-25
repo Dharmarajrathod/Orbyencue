@@ -421,11 +421,19 @@ def transcribe_streaming_audio(audio_bytes: bytes, session_id: str, final_chunk:
 
 @app.get("/health")
 def health():
+    meeting_stt_provider = os.getenv("ORBYNE_MEETING_STT_PROVIDER", "vosk").strip().lower()
+    if meeting_stt_provider == "gemini" and not has_gemini_stt_key():
+        speech_to_text = "gemini/unconfigured"
+    elif meeting_stt_provider == "gemini":
+        speech_to_text = f"gemini/{os.getenv('GEMINI_STT_MODEL', DEFAULT_GEMINI_STT_MODEL)}"
+    else:
+        speech_to_text = "vosk/streaming"
+
     return {
         "status": "ok",
         "provider": "documents",
         "externalAiEnabled": False,
-        "speechToText": "vosk/streaming",
+        "speechToText": speech_to_text,
     }
 
 

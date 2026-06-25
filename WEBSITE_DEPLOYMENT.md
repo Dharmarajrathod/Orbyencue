@@ -47,7 +47,7 @@ Use:
 
 - Build Command: `pip install -r backend-requirements.txt`
 - Start Command: `uvicorn app:app --host 0.0.0.0 --port $PORT`
-- Environment variables for Gemini hosting: `AI_PROVIDER=gemini` and `GEMINI_API_KEY`
+- Environment variables for Gemini hosting: `AI_PROVIDER=gemini`, `GEMINI_API_KEY`, and `ORBYNE_MEETING_STT_PROVIDER=gemini`
 
 After deploy, open the Render URL. The website will work directly because the backend has the provider configuration.
 

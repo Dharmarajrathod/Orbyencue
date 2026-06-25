@@ -53,6 +53,7 @@ If using Gemini on Render:
 
    - `AI_PROVIDER`: `gemini`
    - `GEMINI_API_KEY`: your Gemini key
+   - `ORBYNE_MEETING_STT_PROVIDER`: `gemini`
 
 8. Optional environment variable:
 
