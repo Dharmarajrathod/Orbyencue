@@ -458,6 +458,24 @@ function hasDocumentAnswer(matches) {
   return matches.length && documents.some((doc) => doc.status === "Loaded" && (doc.chunks || []).length);
 }
 
+async function answerFromAi(question) {
+  const response = await fetch(apiUrl("/answer"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ question })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.detail || `AI answer failed with ${response.status}`);
+  }
+  return {
+    answer: payload.answer || "",
+    model: payload.model || "AI"
+  };
+}
+
 function formatAnswer(answer) {
   const lines = answer
     .split(/\n+/)
@@ -713,9 +731,51 @@ async function answerQuestion(question, options = {}) {
       return;
     }
 
+    const aiStartedAt = performance.now();
     if (options.fromMeetingAudio) {
-      updateMessage(assistantMessageId, INSUFFICIENT_DOCUMENT_ANSWER, options.meta || `Source: Documents | Similarity: ${confidence}%`);
-      setMeetingAudioStatus("No relevant document match.");
+      setMeetingAudioStatus("No document match. Asking AI...");
+    }
+    try {
+      const aiResult = await answerFromAi(trimmed);
+      updateMessage(assistantMessageId, aiResult.answer, options.meta || `Source: AI | Document similarity: ${confidence}% | Model: ${aiResult.model}`);
+      if (options.fromMeetingAudio) {
+        setMeetingAudioStatus("AI answer ready");
+      }
+      addHistory(options.historyQuestion || trimmed, "AI");
+      if (options.fromMeetingAudio) {
+        const llmMs = performance.now() - aiStartedAt;
+        logPerformance("audio-to-answer", {
+          chunk: options.chunkNumber || 0,
+          audioCaptureMs: pipelineTimings.captureMs,
+          vadMs: pipelineTimings.vadMs,
+          languageDetectionMs: pipelineTimings.languageDetectionMs,
+          speechToTextMs: pipelineTimings.speechToTextMs || pipelineTimings.transcriptionLatencyMs,
+          documentRetrievalMs: retrievalMs,
+          llmGenerationMs: llmMs,
+          totalSinceQuestionEndMs: performance.now() - (pipelineTimings.questionEndedAt || answerStartedAt)
+        });
+        logAudioStage({
+          stage: "answer",
+          chunkNumber: options.chunkNumber || 0,
+          retrievalScore: confidence,
+          answerSource: "AI",
+          reason: "no_relevant_document_match",
+          retrievalMs: Math.round(retrievalMs),
+          llmMs: Math.round(llmMs),
+          totalMs: Math.round(performance.now() - (pipelineTimings.questionEndedAt || answerStartedAt))
+        });
+      }
+      return;
+    } catch (aiError) {
+      updateMessage(assistantMessageId, `${INSUFFICIENT_DOCUMENT_ANSWER}\n\nAI fallback error: ${aiError.message}`, "AI unavailable");
+      if (options.fromMeetingAudio) {
+        setMeetingAudioStatus("AI fallback unavailable");
+      }
+      addHistory(options.historyQuestion || trimmed, "AI unavailable");
+      return;
+    }
+
+    if (options.fromMeetingAudio) {
       logPerformance("audio-to-answer", {
         chunk: options.chunkNumber || 0,
         audioCaptureMs: pipelineTimings.captureMs,

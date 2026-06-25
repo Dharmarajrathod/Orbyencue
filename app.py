@@ -233,7 +233,9 @@ def extract_legacy_office_text(path: Path, extension: str) -> str:
 
 
 def generate_answer(question: str):
-    raise RuntimeError("External AI answers are disabled. Upload documents and answer from retrieved document context only.")
+    from rag_engine import answer_from_gemini
+
+    return answer_from_gemini(question), os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_STT_MODEL)
 
 
 def decode_wav_pcm16(audio_bytes: bytes) -> tuple[bytes, int]:
@@ -533,7 +535,7 @@ def health():
     return {
         "status": "ok",
         "provider": "documents",
-        "externalAiEnabled": False,
+        "externalAiEnabled": has_gemini_stt_key(),
         "speechToText": speech_to_text,
     }
 
