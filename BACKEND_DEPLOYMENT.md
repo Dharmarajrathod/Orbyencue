@@ -36,7 +36,7 @@ Ollama is intended for local machines. A normal Render web service will not have
 - keep using Gemini with a server-side `GEMINI_API_KEY`, or
 - host Ollama on your own machine/VPS/GPU server and set `OLLAMA_BASE_URL` to that server.
 
-If using Gemini on Render:
+If using NVIDIA on Render for meeting audio transcription:
 
 1. Go to Render.
 2. Click `+ New`.
@@ -51,12 +51,15 @@ If using Gemini on Render:
 
 7. Add environment variables:
 
-   - `AI_PROVIDER`: `gemini`
-   - `GEMINI_API_KEY`: your Gemini key
-   - `ORBYNE_MEETING_STT_PROVIDER`: `gemini`
+   - `NVIDIA_API_KEY`: your NVIDIA API key
+   - `NVIDIA_ASR_MODEL`: `nvidia/parakeet-ctc-1.1b-asr`
+   - `NVIDIA_ASR_FUNCTION_ID`: `1598d209-5e27-4d3c-8079-4751568b1081`
+   - `ORBYNE_MEETING_STT_PROVIDER`: `nvidia`
 
 8. Optional environment variable:
 
+   - `AI_PROVIDER`: `gemini` if manual answers should still use Gemini
+   - `GEMINI_API_KEY`: your Gemini key if manual answers should still use Gemini
    - `GEMINI_MODELS`: `gemini-2.5-flash-lite,gemini-2.5-flash,gemini-2.0-flash`
    - `ALLOWED_ORIGINS`: your GitHub Pages URL, or `*` while testing
 
@@ -96,10 +99,10 @@ Old `.doc` and `.ppt` files are attempted with system converters. For best relia
 
 ## Meeting Audio Capture
 
-The website includes a `Share audio` button. It asks the browser for tab/screen audio, sends short audio chunks to `/transcribe-audio`, and uses Gemini to transcribe them.
+The website includes a `Share audio` button. It asks the browser for tab/screen audio, sends short audio chunks to `/transcribe-audio`, and uses the configured meeting STT provider to transcribe them.
 
 For Google Meet in Chrome, choose `Chrome Tab`, select the Meet tab, and enable `Share tab audio`.
 
-Meeting audio transcription uses Gemini quota. If the backend returns HTTP 429, wait for quota reset or enable billing/increase quota in Google AI Studio.
+Meeting audio transcription uses the configured provider quota. With NVIDIA, if the backend returns rate-limit or availability errors, wait for the quota/reset window or increase the NVIDIA API quota.
 
 When `AI_PROVIDER=ollama`, meeting audio transcription is disabled unless you add a separate speech-to-text engine. Browser speech recognition and manual questions still work.

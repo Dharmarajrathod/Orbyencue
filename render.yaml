@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: orbynecue-gemini-backend
+    name: orbynecue-nvidia-backend
     runtime: python
     buildCommand: pip install -r backend-requirements.txt
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
@@ -11,7 +11,13 @@ services:
         sync: false
       - key: GEMINI_MODELS
         value: gemini-2.5-flash-lite,gemini-2.5-flash,gemini-2.0-flash
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: NVIDIA_ASR_MODEL
+        value: nvidia/parakeet-ctc-1.1b-asr
+      - key: NVIDIA_ASR_FUNCTION_ID
+        value: 1598d209-5e27-4d3c-8079-4751568b1081
       - key: ORBYNE_MEETING_STT_PROVIDER
-        value: gemini
+        value: nvidia
       - key: ALLOWED_ORIGINS
         value: '*'

@@ -86,6 +86,8 @@ STREAMING_STT_TTL_SECONDS = 15 * 60
 STREAMING_VOSK_MODEL = None
 GEMINI_STT_CLIENT = None
 DEFAULT_GEMINI_STT_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_NVIDIA_ASR_MODEL = "nvidia/parakeet-ctc-1.1b-asr"
+DEFAULT_NVIDIA_ASR_FUNCTION_ID = "1598d209-5e27-4d3c-8079-4751568b1081"
 
 
 def get_allowed_origins():
@@ -265,8 +267,18 @@ def has_gemini_stt_key() -> bool:
     return bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
 
 
+def has_nvidia_stt_key() -> bool:
+    return bool(os.getenv("NVIDIA_API_KEY"))
+
+
 def get_meeting_stt_provider() -> str:
     configured_provider = os.getenv("ORBYNE_MEETING_STT_PROVIDER", "").strip().lower()
+    hosted_nvidia_backend = has_nvidia_stt_key() and (
+        configured_provider in {"", "vosk", "gemini", "nvidia"} or os.getenv("RENDER")
+    )
+    if hosted_nvidia_backend:
+        return "nvidia"
+
     hosted_gemini_backend = has_gemini_stt_key() and (
         os.getenv("AI_PROVIDER", "").strip().lower() == "gemini" or os.getenv("RENDER")
     )
@@ -297,6 +309,17 @@ def is_no_speech_transcript(text: str) -> bool:
     return any(marker in normalized for marker in no_speech_markers)
 
 
+def normalize_transcript_result(text: str) -> str:
+    transcript = clean_transcript((text or "").strip())
+    if transcript.upper() == "NO_CLEAR_SPEECH" or is_no_speech_transcript(transcript):
+        return ""
+    return transcript
+
+
+def provider_model_label(provider: str, model: str) -> str:
+    return model if model.startswith(f"{provider}/") else f"{provider}/{model}"
+
+
 def transcribe_audio_with_gemini(audio_bytes: bytes, mime_type: str = "audio/wav") -> dict:
     global GEMINI_STT_CLIENT
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
@@ -319,9 +342,7 @@ def transcribe_audio_with_gemini(audio_bytes: bytes, mime_type: str = "audio/wav
             types.Part.from_bytes(data=audio_bytes, mime_type=mime_type or "audio/wav"),
         ],
     )
-    transcript = clean_transcript((getattr(response, "text", "") or "").strip())
-    if transcript.upper() == "NO_CLEAR_SPEECH" or is_no_speech_transcript(transcript):
-        transcript = ""
+    transcript = normalize_transcript_result(getattr(response, "text", "") or "")
 
     return {
         "speechDetected": bool(transcript),
@@ -332,6 +353,47 @@ def transcribe_audio_with_gemini(audio_bytes: bytes, mime_type: str = "audio/wav
         "transcriptionConfidence": 0.85 if transcript else 0.0,
         "meaningful": is_meaningful_question_or_request(transcript) if transcript else False,
         "model": f"gemini/{model}",
+        "isFinal": True,
+    }
+
+
+def transcribe_audio_with_nvidia(audio_bytes: bytes, mime_type: str = "audio/wav") -> dict:
+    api_key = os.getenv("NVIDIA_API_KEY")
+    if not api_key:
+        raise RuntimeError("NVIDIA_API_KEY is required for NVIDIA meeting transcription.")
+
+    import requests
+
+    model = os.getenv("NVIDIA_ASR_MODEL", DEFAULT_NVIDIA_ASR_MODEL)
+    function_id = os.getenv("NVIDIA_ASR_FUNCTION_ID", DEFAULT_NVIDIA_ASR_FUNCTION_ID)
+    base_url = os.getenv(
+        "NVIDIA_API_BASE_URL",
+        f"https://{function_id}.invocation.api.nvcf.nvidia.com/v1",
+    ).rstrip("/")
+    timeout = float(os.getenv("NVIDIA_ASR_TIMEOUT_SECONDS", "20"))
+    filename = "meeting-audio.wav" if "wav" in (mime_type or "").lower() else "meeting-audio.webm"
+    response = requests.post(
+        f"{base_url}/audio/transcriptions",
+        headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+        data={"language": "en-US"},
+        files={"file": (filename, audio_bytes, mime_type or "audio/wav")},
+        timeout=timeout,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"NVIDIA ASR failed with {response.status_code}: {response.text[:300]}")
+
+    payload = response.json()
+    raw_transcript = payload.get("text") or payload.get("transcript") or payload.get("result") or ""
+    transcript = normalize_transcript_result(raw_transcript)
+    return {
+        "speechDetected": bool(transcript),
+        "language": "english" if transcript else "unknown",
+        "iso639_1": "en" if transcript else "unknown",
+        "languageConfidence": 0.9 if transcript else 0.0,
+        "transcript": transcript,
+        "transcriptionConfidence": 0.9 if transcript else 0.0,
+        "meaningful": is_meaningful_question_or_request(transcript) if transcript else False,
+        "model": provider_model_label("nvidia", model),
         "isFinal": True,
     }
 
@@ -457,7 +519,11 @@ def transcribe_streaming_audio(audio_bytes: bytes, session_id: str, final_chunk:
 @app.get("/health")
 def health():
     meeting_stt_provider = get_meeting_stt_provider()
-    if meeting_stt_provider == "gemini" and not has_gemini_stt_key():
+    if meeting_stt_provider == "nvidia" and not has_nvidia_stt_key():
+        speech_to_text = "nvidia/unconfigured"
+    elif meeting_stt_provider == "nvidia":
+        speech_to_text = provider_model_label("nvidia", os.getenv("NVIDIA_ASR_MODEL", DEFAULT_NVIDIA_ASR_MODEL))
+    elif meeting_stt_provider == "gemini" and not has_gemini_stt_key():
         speech_to_text = "gemini/unconfigured"
     elif meeting_stt_provider == "gemini":
         speech_to_text = f"gemini/{os.getenv('GEMINI_STT_MODEL', DEFAULT_GEMINI_STT_MODEL)}"
@@ -641,7 +707,14 @@ async def transcribe_meeting_audio(
 
         stt_started_at = time.time()
         meeting_stt_provider = get_meeting_stt_provider()
-        if meeting_stt_provider == "gemini" and has_gemini_stt_key():
+        if meeting_stt_provider == "nvidia" and has_nvidia_stt_key():
+            try:
+                result = transcribe_audio_with_nvidia(audio_bytes, "audio/wav")
+            except Exception as nvidia_exc:
+                raise RuntimeError(f"NVIDIA meeting transcription unavailable: {nvidia_exc}") from nvidia_exc
+        elif meeting_stt_provider == "nvidia":
+            raise RuntimeError("NVIDIA meeting transcription is not configured.")
+        elif meeting_stt_provider == "gemini" and has_gemini_stt_key():
             try:
                 result = transcribe_audio_with_gemini(audio_bytes, "audio/wav")
             except Exception as gemini_exc:

@@ -24,6 +24,7 @@ def test_transcribe_endpoint_skips_transient_stt_errors(monkeypatch):
     monkeypatch.delenv("AI_PROVIDER", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
     monkeypatch.setattr(app, "transcribe_streaming_audio", fail_transcription)
 
     client = TestClient(app.app)
@@ -65,6 +66,7 @@ def test_transcribe_endpoint_returns_partial_streaming_text(monkeypatch):
     monkeypatch.delenv("AI_PROVIDER", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
     monkeypatch.setattr(app, "transcribe_streaming_audio", partial_transcription)
 
     client = TestClient(app.app)
@@ -122,3 +124,47 @@ def test_transcribe_endpoint_does_not_fallback_to_vosk_when_gemini_fails(monkeyp
     assert payload["discarded"] is True
     assert payload["reason"] == "stt_unavailable"
     assert payload["model"] == "speech-to-text"
+
+
+def test_transcribe_endpoint_uses_nvidia_provider(monkeypatch):
+    def nvidia_transcription(*args, **kwargs):
+        return {
+            "speechDetected": True,
+            "language": "english",
+            "iso639_1": "en",
+            "languageConfidence": 0.9,
+            "transcript": "what is the renewal price",
+            "transcriptionConfidence": 0.9,
+            "meaningful": True,
+            "model": "nvidia/parakeet-ctc-1.1b-asr",
+            "isFinal": True,
+        }
+
+    def fail_if_vosk_called(*args, **kwargs):
+        raise AssertionError("Vosk should not run when NVIDIA provider is selected.")
+
+    monkeypatch.setenv("ORBYNE_MEETING_STT_PROVIDER", "nvidia")
+    monkeypatch.setenv("NVIDIA_API_KEY", "test-key")
+    monkeypatch.setattr(app, "transcribe_audio_with_nvidia", nvidia_transcription)
+    monkeypatch.setattr(app, "transcribe_streaming_audio", fail_if_vosk_called)
+
+    client = TestClient(app.app)
+    response = client.post(
+        "/transcribe-audio",
+        files={"file": ("chunk.wav", wav_bytes(), "audio/wav")},
+        data={
+            "language": "auto",
+            "session_id": "meeting-1",
+            "chunk_number": "1",
+            "duration": "0.1",
+            "sample_rate": "16000",
+            "audio_energy": "0.01",
+            "voice_activity": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["transcript"] == "what is the renewal price"
+    assert payload["model"] == "nvidia/parakeet-ctc-1.1b-asr"
+    assert payload["discarded"] is False

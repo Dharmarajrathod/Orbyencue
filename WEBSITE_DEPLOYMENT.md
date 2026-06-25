@@ -47,7 +47,7 @@ Use:
 
 - Build Command: `pip install -r backend-requirements.txt`
 - Start Command: `uvicorn app:app --host 0.0.0.0 --port $PORT`
-- Environment variables for Gemini hosting: `AI_PROVIDER=gemini`, `GEMINI_API_KEY`, and `ORBYNE_MEETING_STT_PROVIDER=gemini`
+- Environment variables for hosted meeting transcription: `NVIDIA_API_KEY`, `NVIDIA_ASR_MODEL=nvidia/parakeet-ctc-1.1b-asr`, `NVIDIA_ASR_FUNCTION_ID=1598d209-5e27-4d3c-8079-4751568b1081`, and `ORBYNE_MEETING_STT_PROVIDER=nvidia`
 
 After deploy, open the Render URL. The website will work directly because the backend has the provider configuration.
 
@@ -68,7 +68,7 @@ To hard-code a hosted backend for the static site, set `window.ORBYNE_PUBLIC_BAC
 - To capture meeting audio, click `Share audio`, choose the meeting tab or screen, and enable the browser's audio sharing option.
 - In Chrome, Google Meet audio capture usually works best by choosing the `Chrome Tab` option and selecting the Meet tab with `Share tab audio` enabled.
 - The Meeting Audio meter should move and say `Audio detected`. If it says `No audio detected`, stop sharing and share the Meet tab again with tab audio enabled.
-- Meeting Audio uses Gemini for transcription when `AI_PROVIDER=gemini`, so it consumes quota. The app records 20-second segments and only auto-answers likely questions to reduce usage.
+- Meeting Audio uses NVIDIA for transcription when `ORBYNE_MEETING_STT_PROVIDER=nvidia`, so it consumes NVIDIA API quota. The app records short segments and only auto-answers likely questions to reduce usage.
 - When `AI_PROVIDER=ollama`, manual questions and browser speech recognition work, but meeting audio transcription needs a separate speech-to-text engine.
 - If you see `Gemini quota is exhausted`, wait for the retry/reset window or enable billing/increase quota in Google AI Studio.
 - Browser websites cannot directly capture another app's system audio unless the user shares a tab/screen or uses OS-level audio routing.
