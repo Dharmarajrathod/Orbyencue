@@ -57,7 +57,7 @@ const MEETING_AUDIO_TARGET_SAMPLE_RATE = 16000;
 const MEETING_AUDIO_PROCESSOR_SIZE = 2048;
 const MEETING_AUDIO_RMS_THRESHOLD = 0.0008;
 const MEETING_MIN_SPEECH_SECONDS_PER_CHUNK = 0.005;
-const MIN_MEETING_AUTO_ANSWER_WORDS = 5;
+const MIN_MEETING_AUTO_ANSWER_WORDS = 3;
 const RECENT_TRANSCRIPT_CACHE_LIMIT = 128;
 const TRIAL_DURATION_MS = 60 * 60 * 1000;
 const MAX_CONSECUTIVE_SILENT_UPLOADS = 2;
@@ -272,7 +272,6 @@ function cleanTranscript(text) {
   cleanText = cleanText.replace(/\[[^\]]+\]|\([^\)]+\)/g, " ");
   cleanText = cleanText.replace(/\b(?:um+|uh+|ah+|erm|hmm|you know|like|okay|right)\b/gi, " ");
   cleanText = cleanText.replace(/\b(\w+)(?:\s+\1\b)+/gi, "$1");
-  cleanText = cleanText.replace(/\b(\w+\s+\w+)(?:\s+\1\b)+/gi, "$1");
   cleanText = cleanText.replace(/\s+/g, " ").replace(/^[\s.,;:-]+|[\s.,;:-]+$/g, "");
   if (text.trim().endsWith("?") && !cleanText.endsWith("?")) {
     cleanText += "?";
@@ -984,16 +983,23 @@ function shouldAnswerMeetingTranscript(text) {
   return !fillerOnly && completeThought && (cleanText.endsWith("?") || questionLike || requestLike);
 }
 
+function cleanMeetingQuestionCandidate(text) {
+  return cleanTranscript(text)
+    .replace(/^(?:i\s+)+(?=(what|why|how|when|where|who|which|can|could|would|should|do|does|did|is|are|was|were|will|shall|tell|explain|describe|summarize|compare|show|give|find|list|calculate|analyze)\b)/i, "")
+    .replace(/\s+\b(what|why|how|when|where|who|which|can|could|would|should|do|does|did|is|are|was|were|will|shall|tell|explain|describe|summarize|compare|show|give|find|list|calculate|analyze)\s*$/i, "")
+    .trim();
+}
+
 function splitMeetingTranscriptQuestions(text) {
   const cleanText = cleanTranscript(text);
   if (!cleanText) {
     return [];
   }
 
-  const marked = cleanText.replace(/\s+\b(what|why|how|when|where|who|which|can|could|would|should|do|does|did|is|are|was|were|will|shall|tell|explain|describe|summarize|compare|show|give|find|list|calculate|analyze)\b/gi, "\n$1");
+  const marked = cleanText.replace(/\s+\b(what|why|how|when|where|who|which|tell|explain|describe|summarize|compare|show|give|find|list|calculate|analyze)\b/gi, "\n$1");
   const candidates = marked
     .split(/\n+|(?<=[?!.])\s+/)
-    .map((segment) => cleanTranscript(segment))
+    .map((segment) => cleanMeetingQuestionCandidate(segment))
     .filter(Boolean);
 
   const questions = [];
@@ -1053,7 +1059,7 @@ async function processMeetingQuestionQueue(options = {}) {
     setMeetingAudioStatus("Next question ready...");
     window.setTimeout(() => {
       processMeetingQuestionQueue(options);
-    }, 1200);
+    }, 300);
   }
 }
 
@@ -1172,13 +1178,12 @@ async function sendMeetingAudioChunk(blob, meta = {}) {
         saveMeetingContext();
         renderLiveTranscript();
       }
-      const normalized = transcript.toLowerCase();
       const meetingQuestions = splitMeetingTranscriptQuestions(transcript);
       const readyForAnswer = meetingQuestions.length > 0;
       if (!readyForAnswer && !meta.suppressAnswer && !meetingRecording) {
         setMeetingAudioStatus("Text ready. Waiting for complete question...");
       }
-      if (!meta.suppressAnswer && !meetingRecording && readyForAnswer && normalized !== lastMeetingAnswerText) {
+      if (!meta.suppressAnswer && !meetingRecording && readyForAnswer) {
         enqueueMeetingQuestions(meetingQuestions);
         await processMeetingQuestionQueue({
           transcriptConfidence: Math.round((payload.transcriptionConfidence || 0) * 100),
