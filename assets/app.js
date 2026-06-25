@@ -57,7 +57,7 @@ const MEETING_AUDIO_TARGET_SAMPLE_RATE = 16000;
 const MEETING_AUDIO_PROCESSOR_SIZE = 2048;
 const MEETING_AUDIO_RMS_THRESHOLD = 0.0008;
 const MEETING_MIN_SPEECH_SECONDS_PER_CHUNK = 0.005;
-const MIN_MEETING_AUTO_ANSWER_WORDS = 6;
+const MIN_MEETING_AUTO_ANSWER_WORDS = 5;
 const RECENT_TRANSCRIPT_CACHE_LIMIT = 128;
 const TRIAL_DURATION_MS = 60 * 60 * 1000;
 const MAX_CONSECUTIVE_SILENT_UPLOADS = 2;
@@ -110,6 +110,8 @@ let meetingRecording = false;
 let meetingRecorderGeneration = 0;
 let meetingTranscript = [];
 let displayedMeetingTranscript = [];
+let meetingQuestionQueue = [];
+let meetingAnswerInProgress = false;
 let meetingLivePartialTranscript = "";
 let currentRecordingUrl = "";
 let recentTranscriptHashes = [];
@@ -1011,6 +1013,50 @@ function splitMeetingTranscriptQuestions(text) {
   return questions.length ? questions : (shouldAnswerMeetingTranscript(cleanText) ? [cleanText] : []);
 }
 
+function enqueueMeetingQuestions(questions) {
+  for (const question of questions) {
+    const key = normalizedTranscriptKey(question);
+    if (!key || key === normalizedTranscriptKey(lastMeetingAnswerText)) {
+      continue;
+    }
+    if (meetingQuestionQueue.some((queuedQuestion) => normalizedTranscriptKey(queuedQuestion) === key)) {
+      continue;
+    }
+    meetingQuestionQueue.push(question);
+  }
+  meetingQuestionQueue = meetingQuestionQueue.slice(-6);
+}
+
+async function processMeetingQuestionQueue(options = {}) {
+  if (meetingAnswerInProgress || !meetingQuestionQueue.length || meetingRecording) {
+    return;
+  }
+
+  const meetingQuestion = meetingQuestionQueue.shift();
+  meetingAnswerInProgress = true;
+  lastMeetingAnswerText = meetingQuestion.toLowerCase();
+  try {
+    await answerQuestion(meetingQuestion, {
+      fromMeetingAudio: true,
+      validatedMeetingQuestion: true,
+      transcriptConfidence: options.transcriptConfidence,
+      chunkNumber: options.chunkNumber || 0,
+      pipelineTimings: options.pipelineTimings || {}
+    });
+    removeAnsweredMeetingSegments([meetingQuestion]);
+    renderLiveTranscript();
+  } finally {
+    meetingAnswerInProgress = false;
+  }
+
+  if (meetingQuestionQueue.length) {
+    setMeetingAudioStatus("Next question ready...");
+    window.setTimeout(() => {
+      processMeetingQuestionQueue(options);
+    }, 1200);
+  }
+}
+
 async function sendMeetingAudioChunk(blob, meta = {}) {
   if (!blob.size) {
     return;
@@ -1133,11 +1179,8 @@ async function sendMeetingAudioChunk(blob, meta = {}) {
         setMeetingAudioStatus("Text ready. Waiting for complete question...");
       }
       if (!meta.suppressAnswer && !meetingRecording && readyForAnswer && normalized !== lastMeetingAnswerText) {
-        const meetingQuestion = meetingQuestions[0];
-        lastMeetingAnswerText = meetingQuestion.toLowerCase();
-        await answerQuestion(meetingQuestion, {
-          fromMeetingAudio: true,
-          validatedMeetingQuestion: true,
+        enqueueMeetingQuestions(meetingQuestions);
+        await processMeetingQuestionQueue({
           transcriptConfidence: Math.round((payload.transcriptionConfidence || 0) * 100),
           chunkNumber: payload.chunkNumber || meta.chunkNumber || 0,
           pipelineTimings: {
@@ -1147,8 +1190,6 @@ async function sendMeetingAudioChunk(blob, meta = {}) {
             languageDetectionMs: 0
           }
         });
-        removeAnsweredMeetingSegments([meetingQuestion]);
-        renderLiveTranscript();
       }
     }
   } catch (error) {
@@ -1531,6 +1572,8 @@ async function startListeningSession() {
   }
   transcriptionPausedUntil = 0;
   meetingListening = true;
+  meetingQuestionQueue = [];
+  meetingAnswerInProgress = false;
   meetingLivePartialTranscript = "";
   renderLiveTranscript();
   meetingAudioSessionId = createMeetingAudioSessionId();
@@ -1734,6 +1777,8 @@ function clearChat({ clearDocuments = false } = {}) {
   history = [];
   meetingTranscript = [];
   displayedMeetingTranscript = [];
+  meetingQuestionQueue = [];
+  meetingAnswerInProgress = false;
   recentDisplayedTranscriptHashes = [];
   recentTranscriptHashes = [];
   localStorage.removeItem(STORAGE_KEYS.messages);
@@ -1763,6 +1808,8 @@ function loadState() {
   messages = [];
   meetingTranscript = [];
   displayedMeetingTranscript = [];
+  meetingQuestionQueue = [];
+  meetingAnswerInProgress = false;
   recentDisplayedTranscriptHashes = [];
   recentTranscriptHashes = [];
 
