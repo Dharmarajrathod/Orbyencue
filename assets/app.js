@@ -577,12 +577,6 @@ function startCurrentQuestion(question, meta = contextLabel()) {
   return { assistantMessageId };
 }
 
-function appendQuestion(question, meta = contextLabel()) {
-  addMessage("user", question, meta);
-  const assistantMessageId = addMessage("assistant", "Thinking...", "Processing");
-  return { assistantMessageId };
-}
-
 function startCurrentAnswer(content, meta = contextLabel()) {
   messages = [];
   saveMessages();
@@ -659,9 +653,7 @@ async function answerQuestion(question, options = {}) {
 
   const assistantMessageId = options.silentUserMessage
     ? startCurrentAnswer("Thinking...", options.meta || "Processing")
-    : options.appendToChat
-      ? appendQuestion(trimmed, contextLabel()).assistantMessageId
-      : startCurrentQuestion(trimmed, contextLabel()).assistantMessageId;
+    : startCurrentQuestion(trimmed, contextLabel()).assistantMessageId;
   setProcessing(true);
 
   const retrievalStartedAt = performance.now();
@@ -1141,23 +1133,21 @@ async function sendMeetingAudioChunk(blob, meta = {}) {
         setMeetingAudioStatus("Text ready. Waiting for complete question...");
       }
       if (!meta.suppressAnswer && !meetingRecording && readyForAnswer && normalized !== lastMeetingAnswerText) {
-        lastMeetingAnswerText = normalized;
-        for (const meetingQuestion of meetingQuestions) {
-          await answerQuestion(meetingQuestion, {
-            fromMeetingAudio: true,
-            appendToChat: true,
-            validatedMeetingQuestion: true,
-            transcriptConfidence: Math.round((payload.transcriptionConfidence || 0) * 100),
-            chunkNumber: payload.chunkNumber || meta.chunkNumber || 0,
-            pipelineTimings: {
-              questionEndedAt: meta.questionEndedAt || uploadStartedAt,
-              transcriptionLatencyMs: performance.now() - uploadStartedAt,
-              speechToTextMs: backendTimings.speechToTextMs,
-              languageDetectionMs: 0
-            }
-          });
-        }
-        removeAnsweredMeetingSegments(meetingQuestions);
+        const meetingQuestion = meetingQuestions[0];
+        lastMeetingAnswerText = meetingQuestion.toLowerCase();
+        await answerQuestion(meetingQuestion, {
+          fromMeetingAudio: true,
+          validatedMeetingQuestion: true,
+          transcriptConfidence: Math.round((payload.transcriptionConfidence || 0) * 100),
+          chunkNumber: payload.chunkNumber || meta.chunkNumber || 0,
+          pipelineTimings: {
+            questionEndedAt: meta.questionEndedAt || uploadStartedAt,
+            transcriptionLatencyMs: performance.now() - uploadStartedAt,
+            speechToTextMs: backendTimings.speechToTextMs,
+            languageDetectionMs: 0
+          }
+        });
+        removeAnsweredMeetingSegments([meetingQuestion]);
         renderLiveTranscript();
       }
     }
