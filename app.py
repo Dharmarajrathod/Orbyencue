@@ -265,6 +265,20 @@ def has_gemini_stt_key() -> bool:
     return bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
 
 
+def get_meeting_stt_provider() -> str:
+    configured_provider = os.getenv("ORBYNE_MEETING_STT_PROVIDER", "").strip().lower()
+    hosted_gemini_backend = has_gemini_stt_key() and (
+        os.getenv("AI_PROVIDER", "").strip().lower() == "gemini" or os.getenv("RENDER")
+    )
+    if hosted_gemini_backend and configured_provider in {"", "vosk"}:
+        return "gemini"
+
+    if configured_provider:
+        return configured_provider
+
+    return "vosk"
+
+
 def transcribe_audio_with_gemini(audio_bytes: bytes, mime_type: str = "audio/wav") -> dict:
     global GEMINI_STT_CLIENT
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
@@ -421,7 +435,7 @@ def transcribe_streaming_audio(audio_bytes: bytes, session_id: str, final_chunk:
 
 @app.get("/health")
 def health():
-    meeting_stt_provider = os.getenv("ORBYNE_MEETING_STT_PROVIDER", "vosk").strip().lower()
+    meeting_stt_provider = get_meeting_stt_provider()
     if meeting_stt_provider == "gemini" and not has_gemini_stt_key():
         speech_to_text = "gemini/unconfigured"
     elif meeting_stt_provider == "gemini":
@@ -605,7 +619,7 @@ async def transcribe_meeting_audio(
             raise RuntimeError("Meeting audio speech-to-text requires sessioned 16 kHz WAV chunks.")
 
         stt_started_at = time.time()
-        meeting_stt_provider = os.getenv("ORBYNE_MEETING_STT_PROVIDER", "vosk").strip().lower()
+        meeting_stt_provider = get_meeting_stt_provider()
         if meeting_stt_provider == "gemini" and has_gemini_stt_key():
             try:
                 result = transcribe_audio_with_gemini(audio_bytes, "audio/wav")
