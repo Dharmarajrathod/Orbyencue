@@ -62,6 +62,7 @@ const MIN_MEETING_AUTO_ANSWER_WORDS = 3;
 const MIN_BEHAVIORAL_PROMPT_WORDS = 10;
 const MEETING_QUESTION_BUFFER_MAX_CHARS = 900;
 const MEETING_QUESTION_QUEUE_LIMIT = 20;
+const MEETING_QUESTION_SIGNAL_WORDS = "what|why|how|when|where|who|which|can|could|would|should|do|does|did|is|are|was|were|will|shall|have|has|had|am|tell|explain|describe|summarize|compare|show|give|find|list|calculate|analyze|answer|define|name|discuss|walk";
 const RECENT_TRANSCRIPT_CACHE_LIMIT = 128;
 const TRIAL_DURATION_MS = 60 * 60 * 1000;
 const MAX_CONSECUTIVE_SILENT_UPLOADS = 2;
@@ -1091,8 +1092,8 @@ function shouldAnswerMeetingTranscript(text) {
     return false;
   }
   const words = tokenize(cleanText);
-  const questionLike = /\b(what|why|how|when|where|who|which|can|could|would|should|do|does|did|is|are|was|were|will|shall)\b/i.test(cleanText);
-  const requestLike = /\b(tell|explain|describe|summarize|compare|show|give|find|list|calculate|analyze)\b/i.test(cleanText);
+  const questionLike = new RegExp(`\\b(${MEETING_QUESTION_SIGNAL_WORDS})\\b`, "i").test(cleanText);
+  const requestLike = /\b(tell|explain|describe|summarize|compare|show|give|find|list|calculate|analyze|answer|define|name|discuss|walk)\b/i.test(cleanText);
   const fillerOnly = /^(hi|hello|hey|thanks|thank you|yeah|yes|no|ok|okay|sure|great|fine|cool|nice to meet you)\.?$/i.test(cleanText)
     || /^(my name is|i am|i'm|this is)\b/i.test(cleanText);
   const trailingFragment = /\b(and|or|but|so|because|with|for|to|of|the|a|an|in|on|at|from|by|about|like|that|this|these|those|we|i|you|they|he|she|it|what|why|how|when|where|who|which|is|are|was|were|do|does|did|can|could|would|should|will|shall)$/i.test(cleanText);
@@ -1103,13 +1104,14 @@ function shouldAnswerMeetingTranscript(text) {
 
 function cleanMeetingQuestionCandidate(text) {
   return cleanTranscript(text)
-    .replace(/^(?:i\s+)+(?=(what|why|how|when|where|who|which|can|could|would|should|do|does|did|is|are|was|were|will|shall|tell|explain|describe|summarize|compare|show|give|find|list|calculate|analyze)\b)/i, "")
-    .replace(/\s+\b(what|why|how|when|where|who|which|can|could|would|should|do|does|did|is|are|was|were|will|shall|tell|explain|describe|summarize|compare|show|give|find|list|calculate|analyze)\s*$/i, "")
+    .replace(/^(?:question|q)(?:\s+(?:number\s+)?[a-z0-9]+)?[:\s-]+/i, "")
+    .replace(new RegExp(`^(?:i\\s+)+(?=(${MEETING_QUESTION_SIGNAL_WORDS})\\b)`, "i"), "")
+    .replace(new RegExp(`\\s+\\b(${MEETING_QUESTION_SIGNAL_WORDS})\\s*$`, "i"), "")
     .trim();
 }
 
 function startsWithQuestionSignal(text) {
-  return /^(what|why|how|when|where|who|which|can|could|would|should|do|does|did|is|are|was|were|will|shall|tell|explain|describe|summarize|compare|show|give|find|list|calculate|analyze)\b/i.test(cleanTranscript(text));
+  return new RegExp(`^(?:(?:question|q)(?:\\s+(?:number\\s+)?[a-z0-9]+)?[:\\s-]+)?(${MEETING_QUESTION_SIGNAL_WORDS})\\b`, "i").test(cleanTranscript(text));
 }
 
 function splitMeetingTranscriptQuestions(text) {
@@ -1122,7 +1124,7 @@ function splitMeetingTranscriptQuestions(text) {
     return isCompleteBehavioralPrompt(cleanText) && shouldAnswerMeetingTranscript(cleanText) ? [cleanText] : [];
   }
 
-  const marked = cleanText.replace(/\s+\b(what|why|how|when|where|who|which|tell|explain|describe|summarize|compare|show|give|find|list|calculate|analyze)\b/gi, "\n$1");
+  const marked = cleanText.replace(new RegExp(`\\s+\\b(${MEETING_QUESTION_SIGNAL_WORDS})\\b`, "gi"), "\n$1");
   const candidates = marked
     .split(/\n+|(?<=[?!.])\s+/)
     .map((segment) => cleanMeetingQuestionCandidate(segment))
