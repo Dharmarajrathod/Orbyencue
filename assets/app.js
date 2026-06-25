@@ -577,6 +577,12 @@ function startCurrentQuestion(question, meta = contextLabel()) {
   return { assistantMessageId };
 }
 
+function appendQuestion(question, meta = contextLabel()) {
+  addMessage("user", question, meta);
+  const assistantMessageId = addMessage("assistant", "Thinking...", "Processing");
+  return { assistantMessageId };
+}
+
 function startCurrentAnswer(content, meta = contextLabel()) {
   messages = [];
   saveMessages();
@@ -653,7 +659,9 @@ async function answerQuestion(question, options = {}) {
 
   const assistantMessageId = options.silentUserMessage
     ? startCurrentAnswer("Thinking...", options.meta || "Processing")
-    : startCurrentQuestion(trimmed, contextLabel()).assistantMessageId;
+    : options.appendToChat
+      ? appendQuestion(trimmed, contextLabel()).assistantMessageId
+      : startCurrentQuestion(trimmed, contextLabel()).assistantMessageId;
   setProcessing(true);
 
   const retrievalStartedAt = performance.now();
@@ -982,6 +990,35 @@ function shouldAnswerMeetingTranscript(text) {
   return !fillerOnly && completeThought && (cleanText.endsWith("?") || questionLike || requestLike);
 }
 
+function splitMeetingTranscriptQuestions(text) {
+  const cleanText = cleanTranscript(text);
+  if (!cleanText) {
+    return [];
+  }
+
+  const marked = cleanText.replace(/\s+\b(what|why|how|when|where|who|which|can|could|would|should|do|does|did|is|are|was|were|will|shall|tell|explain|describe|summarize|compare|show|give|find|list|calculate|analyze)\b/gi, "\n$1");
+  const candidates = marked
+    .split(/\n+|(?<=[?!.])\s+/)
+    .map((segment) => cleanTranscript(segment))
+    .filter(Boolean);
+
+  const questions = [];
+  for (const candidate of candidates) {
+    const words = tokenize(candidate);
+    if (words.length < 3) {
+      continue;
+    }
+    if (!shouldAnswerMeetingTranscript(candidate)) {
+      continue;
+    }
+    if (!questions.some((question) => normalizedTranscriptKey(question) === normalizedTranscriptKey(candidate))) {
+      questions.push(candidate);
+    }
+  }
+
+  return questions.length ? questions : (shouldAnswerMeetingTranscript(cleanText) ? [cleanText] : []);
+}
+
 async function sendMeetingAudioChunk(blob, meta = {}) {
   if (!blob.size) {
     return;
@@ -1098,24 +1135,29 @@ async function sendMeetingAudioChunk(blob, meta = {}) {
         renderLiveTranscript();
       }
       const normalized = transcript.toLowerCase();
-      const readyForAnswer = shouldAnswerMeetingTranscript(transcript);
+      const meetingQuestions = splitMeetingTranscriptQuestions(transcript);
+      const readyForAnswer = meetingQuestions.length > 0;
       if (!readyForAnswer && !meta.suppressAnswer && !meetingRecording) {
         setMeetingAudioStatus("Text ready. Waiting for complete question...");
       }
       if (!meta.suppressAnswer && !meetingRecording && readyForAnswer && normalized !== lastMeetingAnswerText) {
         lastMeetingAnswerText = normalized;
-        await answerQuestion(transcript, {
-          fromMeetingAudio: true,
-          transcriptConfidence: Math.round((payload.transcriptionConfidence || 0) * 100),
-          chunkNumber: payload.chunkNumber || meta.chunkNumber || 0,
-          pipelineTimings: {
-            questionEndedAt: meta.questionEndedAt || uploadStartedAt,
-            transcriptionLatencyMs: performance.now() - uploadStartedAt,
-            speechToTextMs: backendTimings.speechToTextMs,
-            languageDetectionMs: 0
-          }
-        });
-        removeAnsweredMeetingSegments([transcript]);
+        for (const meetingQuestion of meetingQuestions) {
+          await answerQuestion(meetingQuestion, {
+            fromMeetingAudio: true,
+            appendToChat: true,
+            validatedMeetingQuestion: true,
+            transcriptConfidence: Math.round((payload.transcriptionConfidence || 0) * 100),
+            chunkNumber: payload.chunkNumber || meta.chunkNumber || 0,
+            pipelineTimings: {
+              questionEndedAt: meta.questionEndedAt || uploadStartedAt,
+              transcriptionLatencyMs: performance.now() - uploadStartedAt,
+              speechToTextMs: backendTimings.speechToTextMs,
+              languageDetectionMs: 0
+            }
+          });
+        }
+        removeAnsweredMeetingSegments(meetingQuestions);
         renderLiveTranscript();
       }
     }
