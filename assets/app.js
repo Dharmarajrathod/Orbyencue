@@ -49,6 +49,7 @@ const DEMO_CREDENTIALS = {
 
 const PUBLIC_BACKEND_URL = window.ORBYNE_PUBLIC_BACKEND_URL || "";
 const DOCUMENT_MATCH_THRESHOLD = 40;
+const BEHAVIORAL_DOCUMENT_MATCH_THRESHOLD = 70;
 const MAX_LOCAL_ANSWER_WORDS = 180;
 const MEETING_AUDIO_SEGMENT_MS = 2000;
 const MEETING_AUDIO_FIRST_CHUNK_MS = 2000;
@@ -466,6 +467,10 @@ function hasDocumentAnswer(matches) {
   return matches.length && documents.some((doc) => doc.status === "Loaded" && (doc.chunks || []).length);
 }
 
+function documentMatchThresholdForQuestion(question) {
+  return isBehavioralPrompt(question) ? BEHAVIORAL_DOCUMENT_MATCH_THRESHOLD : DOCUMENT_MATCH_THRESHOLD;
+}
+
 async function answerFromAi(question) {
   const response = await fetch(apiUrl("/answer"), {
     method: "POST",
@@ -691,12 +696,14 @@ async function answerQuestion(question, options = {}) {
   const matches = getBestChunks(trimmed);
   const retrievalMs = performance.now() - retrievalStartedAt;
   const confidence = matches.length ? Math.round(matches[0].score * 10000) / 100 : 0;
+  const documentMatchThreshold = documentMatchThresholdForQuestion(trimmed);
   if (options.fromMeetingAudio) {
     logAudioStage({
       stage: "retrieval",
       chunkNumber: options.chunkNumber || 0,
       transcript: trimmed,
       retrievalScore: confidence,
+      retrievalThreshold: documentMatchThreshold,
       questionDetected: true,
       retrievalMs: Math.round(retrievalMs),
       topK: matches.length
@@ -704,39 +711,41 @@ async function answerQuestion(question, options = {}) {
   }
 
   try {
-    if (matches.length && confidence >= DOCUMENT_MATCH_THRESHOLD) {
+    if (matches.length && confidence >= documentMatchThreshold) {
       const answer = localAnswer(trimmed, matches);
-      const bestMatch = matches[0];
-      const pageLabel = bestMatch.page ? ` | Page: ${bestMatch.page}` : "";
-      const transcriptConfidenceLabel = options.transcriptConfidence != null ? ` | Confidence: ${options.transcriptConfidence}%` : "";
-      updateMessage(assistantMessageId, answer, options.meta || `Source: Document | Similarity: ${confidence}%${transcriptConfidenceLabel} | ${bestMatch.filename}${pageLabel}`);
-      if (options.fromMeetingAudio) {
-        setMeetingAudioStatus(`Document match: ${confidence}%`);
-        logPerformance("audio-to-answer", {
-          chunk: options.chunkNumber || 0,
-          audioCaptureMs: pipelineTimings.captureMs,
-          vadMs: pipelineTimings.vadMs,
-          languageDetectionMs: pipelineTimings.languageDetectionMs,
-          speechToTextMs: pipelineTimings.speechToTextMs || pipelineTimings.transcriptionLatencyMs,
-          documentRetrievalMs: retrievalMs,
-          llmGenerationMs: 0,
-          totalSinceQuestionEndMs: performance.now() - (pipelineTimings.questionEndedAt || answerStartedAt)
-        });
-        logAudioStage({
-          stage: "answer",
-          chunkNumber: options.chunkNumber || 0,
-          retrievalScore: confidence,
-          answerSource: "Document",
-          document: bestMatch.filename,
-          page: bestMatch.page || null,
-          retrievalMs: Math.round(retrievalMs),
-          totalMs: Math.round(performance.now() - (pipelineTimings.questionEndedAt || answerStartedAt))
-        });
+      if (answer !== INSUFFICIENT_DOCUMENT_ANSWER) {
+        const bestMatch = matches[0];
+        const pageLabel = bestMatch.page ? ` | Page: ${bestMatch.page}` : "";
+        const transcriptConfidenceLabel = options.transcriptConfidence != null ? ` | Confidence: ${options.transcriptConfidence}%` : "";
+        updateMessage(assistantMessageId, answer, options.meta || `Source: Document | Similarity: ${confidence}%${transcriptConfidenceLabel} | ${bestMatch.filename}${pageLabel}`);
+        if (options.fromMeetingAudio) {
+          setMeetingAudioStatus(`Document match: ${confidence}%`);
+          logPerformance("audio-to-answer", {
+            chunk: options.chunkNumber || 0,
+            audioCaptureMs: pipelineTimings.captureMs,
+            vadMs: pipelineTimings.vadMs,
+            languageDetectionMs: pipelineTimings.languageDetectionMs,
+            speechToTextMs: pipelineTimings.speechToTextMs || pipelineTimings.transcriptionLatencyMs,
+            documentRetrievalMs: retrievalMs,
+            llmGenerationMs: 0,
+            totalSinceQuestionEndMs: performance.now() - (pipelineTimings.questionEndedAt || answerStartedAt)
+          });
+          logAudioStage({
+            stage: "answer",
+            chunkNumber: options.chunkNumber || 0,
+            retrievalScore: confidence,
+            answerSource: "Document",
+            document: bestMatch.filename,
+            page: bestMatch.page || null,
+            retrievalMs: Math.round(retrievalMs),
+            totalMs: Math.round(performance.now() - (pipelineTimings.questionEndedAt || answerStartedAt))
+          });
+        }
+        if (!options.silentUserMessage) {
+          addHistory(trimmed, `Document ${confidence}%`);
+        }
+        return;
       }
-      if (!options.silentUserMessage) {
-        addHistory(trimmed, `Document ${confidence}%`);
-      }
-      return;
     }
 
     const aiStartedAt = performance.now();
@@ -811,13 +820,15 @@ async function answerQuestion(question, options = {}) {
     updateMessage(assistantMessageId, INSUFFICIENT_DOCUMENT_ANSWER, options.meta || `Source: Documents | Similarity: ${confidence}%`);
     addHistory(options.historyQuestion || trimmed, "Documents");
   } catch (error) {
-    if (matches.length && confidence >= DOCUMENT_MATCH_THRESHOLD && hasDocumentAnswer(matches)) {
+    if (matches.length && confidence >= documentMatchThreshold && hasDocumentAnswer(matches)) {
       const answer = localAnswer(trimmed, matches);
-      const bestMatch = matches[0];
-      const pageLabel = bestMatch.page ? ` | Page: ${bestMatch.page}` : "";
-      updateMessage(assistantMessageId, answer, options.meta || `Source: Document | Similarity: ${confidence}% | ${bestMatch.filename}${pageLabel}`);
-      addHistory(options.historyQuestion || trimmed, `Document ${confidence}%`);
-      return;
+      if (answer !== INSUFFICIENT_DOCUMENT_ANSWER) {
+        const bestMatch = matches[0];
+        const pageLabel = bestMatch.page ? ` | Page: ${bestMatch.page}` : "";
+        updateMessage(assistantMessageId, answer, options.meta || `Source: Document | Similarity: ${confidence}% | ${bestMatch.filename}${pageLabel}`);
+        addHistory(options.historyQuestion || trimmed, `Document ${confidence}%`);
+        return;
+      }
     }
 
     updateMessage(assistantMessageId, `Error: ${error.message}`, "Error");
