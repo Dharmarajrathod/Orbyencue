@@ -611,6 +611,12 @@ function startCurrentQuestion(question, meta = contextLabel()) {
   return { assistantMessageId };
 }
 
+function appendMeetingQuestion(question, meta = contextLabel()) {
+  addMessage("user", question, meta);
+  const assistantMessageId = addMessage("assistant", "Generating answer...", "Processing");
+  return { assistantMessageId };
+}
+
 function startCurrentAnswer(content, meta = contextLabel()) {
   messages = [];
   saveMessages();
@@ -687,7 +693,9 @@ async function answerQuestion(question, options = {}) {
 
   const assistantMessageId = options.silentUserMessage
     ? startCurrentAnswer("Thinking...", options.meta || "Processing")
-    : startCurrentQuestion(trimmed, contextLabel()).assistantMessageId;
+    : options.fromMeetingAudio
+      ? appendMeetingQuestion(trimmed, contextLabel()).assistantMessageId
+      : startCurrentQuestion(trimmed, contextLabel()).assistantMessageId;
   setProcessing(true);
 
   const retrievalStartedAt = performance.now();
