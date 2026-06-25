@@ -61,6 +61,7 @@ const MEETING_MIN_SPEECH_SECONDS_PER_CHUNK = 0.005;
 const MIN_MEETING_AUTO_ANSWER_WORDS = 3;
 const MIN_BEHAVIORAL_PROMPT_WORDS = 10;
 const MEETING_QUESTION_BUFFER_MAX_CHARS = 900;
+const MEETING_QUESTION_QUEUE_LIMIT = 20;
 const RECENT_TRANSCRIPT_CACHE_LIMIT = 128;
 const TRIAL_DURATION_MS = 60 * 60 * 1000;
 const MAX_CONSECUTIVE_SILENT_UPLOADS = 2;
@@ -1143,6 +1144,7 @@ function splitMeetingTranscriptQuestions(text) {
 }
 
 function enqueueMeetingQuestions(questions) {
+  let addedCount = 0;
   for (const question of questions) {
     const key = normalizedTranscriptKey(question);
     if (!key || key === normalizedTranscriptKey(lastMeetingAnswerText)) {
@@ -1152,8 +1154,10 @@ function enqueueMeetingQuestions(questions) {
       continue;
     }
     meetingQuestionQueue.push(question);
+    addedCount += 1;
   }
-  meetingQuestionQueue = meetingQuestionQueue.slice(-6);
+  meetingQuestionQueue = meetingQuestionQueue.slice(-MEETING_QUESTION_QUEUE_LIMIT);
+  return addedCount;
 }
 
 function clearMeetingQuestionQueue() {
@@ -1177,7 +1181,11 @@ function scheduleMeetingQuestionQueue(options = {}, delayMs = 0) {
 }
 
 async function processMeetingQuestionQueue(options = {}) {
-  if (meetingAnswerInProgress || !meetingQuestionQueue.length || meetingRecording) {
+  if (!meetingQuestionQueue.length) {
+    return;
+  }
+  if (meetingAnswerInProgress || meetingRecording) {
+    scheduleMeetingQuestionQueue(options, 500);
     return;
   }
 
@@ -1342,9 +1350,11 @@ async function sendMeetingAudioChunk(blob, meta = {}) {
             languageDetectionMs: 0
           }
         };
-        enqueueMeetingQuestions(meetingQuestions);
-        meetingQuestionTranscriptBuffer = "";
-        scheduleMeetingQuestionQueue(queueOptions);
+        const queuedCount = enqueueMeetingQuestions(meetingQuestions);
+        if (queuedCount > 0) {
+          meetingQuestionTranscriptBuffer = "";
+          scheduleMeetingQuestionQueue(queueOptions);
+        }
       }
     }
   } catch (error) {
