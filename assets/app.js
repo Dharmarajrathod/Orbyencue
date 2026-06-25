@@ -50,14 +50,14 @@ const DEMO_CREDENTIALS = {
 const PUBLIC_BACKEND_URL = window.ORBYNE_PUBLIC_BACKEND_URL || "";
 const DOCUMENT_MATCH_THRESHOLD = 40;
 const MAX_LOCAL_ANSWER_WORDS = 180;
-const MEETING_AUDIO_SEGMENT_MS = 650;
-const MEETING_AUDIO_FIRST_CHUNK_MS = 350;
-const MEETING_AUDIO_OVERLAP_MS = 200;
+const MEETING_AUDIO_SEGMENT_MS = 5000;
+const MEETING_AUDIO_FIRST_CHUNK_MS = 5000;
+const MEETING_AUDIO_OVERLAP_MS = 500;
 const MEETING_AUDIO_TARGET_SAMPLE_RATE = 16000;
 const MEETING_AUDIO_PROCESSOR_SIZE = 2048;
 const MEETING_AUDIO_RMS_THRESHOLD = 0.0008;
 const MEETING_MIN_SPEECH_SECONDS_PER_CHUNK = 0.005;
-const MIN_MEETING_AUTO_ANSWER_WORDS = 5;
+const MIN_MEETING_AUTO_ANSWER_WORDS = 6;
 const RECENT_TRANSCRIPT_CACHE_LIMIT = 128;
 const TRIAL_DURATION_MS = 60 * 60 * 1000;
 const MAX_CONSECUTIVE_SILENT_UPLOADS = 2;
@@ -972,10 +972,14 @@ function compactTranscriptForAnalysis(text, maxCharacters = 14000) {
 function shouldAnswerMeetingTranscript(text) {
   const cleanText = cleanTranscript(text);
   const words = tokenize(cleanText);
-  const questionLike = /\b(what|why|how|when|where|who|which|can|could|would|should|do|does|did|is|are|was|were|will|shall|tell|explain)\b/i.test(cleanText);
+  const questionLike = /\b(what|why|how|when|where|who|which|can|could|would|should|do|does|did|is|are|was|were|will|shall)\b/i.test(cleanText);
+  const requestLike = /\b(tell|explain|describe|summarize|compare|show|give|find|list|calculate|analyze)\b/i.test(cleanText);
   const fillerOnly = /^(hi|hello|hey|thanks|thank you|yeah|yes|no|ok|okay|sure|great|fine|cool|nice to meet you)\.?$/i.test(cleanText)
     || /^(my name is|i am|i'm|this is)\b/i.test(cleanText);
-  return !fillerOnly && words.length >= 3 && (cleanText.endsWith("?") || questionLike || words.length >= MIN_MEETING_AUTO_ANSWER_WORDS);
+  const trailingFragment = /\b(and|or|but|so|because|with|for|to|of|the|a|an|in|on|at|from|by|about|like|that|this|these|those|we|i|you|they|he|she|it|is|are|was|were|do|does|did|can|could|would|should|will|shall)$/i.test(cleanText);
+  const hasSentenceEnd = /[?.!]$/.test(cleanText);
+  const completeThought = hasSentenceEnd || ((questionLike || requestLike) && words.length >= MIN_MEETING_AUTO_ANSWER_WORDS && !trailingFragment);
+  return !fillerOnly && completeThought && (cleanText.endsWith("?") || questionLike || requestLike);
 }
 
 async function sendMeetingAudioChunk(blob, meta = {}) {
@@ -1094,11 +1098,14 @@ async function sendMeetingAudioChunk(blob, meta = {}) {
         renderLiveTranscript();
       }
       const normalized = transcript.toLowerCase();
-      if (!meta.suppressAnswer && !meetingRecording && normalized !== lastMeetingAnswerText) {
+      const readyForAnswer = shouldAnswerMeetingTranscript(transcript);
+      if (!readyForAnswer && !meta.suppressAnswer && !meetingRecording) {
+        setMeetingAudioStatus("Text ready. Waiting for complete question...");
+      }
+      if (!meta.suppressAnswer && !meetingRecording && readyForAnswer && normalized !== lastMeetingAnswerText) {
         lastMeetingAnswerText = normalized;
         await answerQuestion(transcript, {
           fromMeetingAudio: true,
-          validatedMeetingQuestion: true,
           transcriptConfidence: Math.round((payload.transcriptionConfidence || 0) * 100),
           chunkNumber: payload.chunkNumber || meta.chunkNumber || 0,
           pipelineTimings: {
