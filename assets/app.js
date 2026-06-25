@@ -112,6 +112,7 @@ let meetingTranscript = [];
 let displayedMeetingTranscript = [];
 let meetingQuestionQueue = [];
 let meetingAnswerInProgress = false;
+let meetingQuestionQueueTimer = null;
 let meetingLivePartialTranscript = "";
 let currentRecordingUrl = "";
 let recentTranscriptHashes = [];
@@ -645,7 +646,7 @@ async function answerQuestion(question, options = {}) {
   if (!trimmed) {
     return;
   }
-  if (options.fromMeetingAudio && hasRecentlyProcessedTranscript(trimmed)) {
+  if (options.fromMeetingAudio && !options.skipDuplicateCheck && hasRecentlyProcessedTranscript(trimmed)) {
     return;
   }
   if (options.fromMeetingAudio && !options.validatedMeetingQuestion && !shouldAnswerMeetingTranscript(trimmed)) {
@@ -1033,6 +1034,25 @@ function enqueueMeetingQuestions(questions) {
   meetingQuestionQueue = meetingQuestionQueue.slice(-6);
 }
 
+function clearMeetingQuestionQueue() {
+  meetingQuestionQueue = [];
+  meetingAnswerInProgress = false;
+  if (meetingQuestionQueueTimer) {
+    window.clearTimeout(meetingQuestionQueueTimer);
+    meetingQuestionQueueTimer = null;
+  }
+}
+
+function scheduleMeetingQuestionQueue(options = {}, delayMs = 0) {
+  if (meetingQuestionQueueTimer) {
+    return;
+  }
+  meetingQuestionQueueTimer = window.setTimeout(async () => {
+    meetingQuestionQueueTimer = null;
+    await processMeetingQuestionQueue(options);
+  }, delayMs);
+}
+
 async function processMeetingQuestionQueue(options = {}) {
   if (meetingAnswerInProgress || !meetingQuestionQueue.length || meetingRecording) {
     return;
@@ -1045,6 +1065,7 @@ async function processMeetingQuestionQueue(options = {}) {
     await answerQuestion(meetingQuestion, {
       fromMeetingAudio: true,
       validatedMeetingQuestion: true,
+      skipDuplicateCheck: true,
       transcriptConfidence: options.transcriptConfidence,
       chunkNumber: options.chunkNumber || 0,
       pipelineTimings: options.pipelineTimings || {}
@@ -1057,9 +1078,7 @@ async function processMeetingQuestionQueue(options = {}) {
 
   if (meetingQuestionQueue.length) {
     setMeetingAudioStatus("Next question ready...");
-    window.setTimeout(() => {
-      processMeetingQuestionQueue(options);
-    }, 300);
+    scheduleMeetingQuestionQueue(options, 300);
   }
 }
 
@@ -1184,8 +1203,7 @@ async function sendMeetingAudioChunk(blob, meta = {}) {
         setMeetingAudioStatus("Text ready. Waiting for complete question...");
       }
       if (!meta.suppressAnswer && !meetingRecording && readyForAnswer) {
-        enqueueMeetingQuestions(meetingQuestions);
-        await processMeetingQuestionQueue({
+        const queueOptions = {
           transcriptConfidence: Math.round((payload.transcriptionConfidence || 0) * 100),
           chunkNumber: payload.chunkNumber || meta.chunkNumber || 0,
           pipelineTimings: {
@@ -1194,7 +1212,9 @@ async function sendMeetingAudioChunk(blob, meta = {}) {
             speechToTextMs: backendTimings.speechToTextMs,
             languageDetectionMs: 0
           }
-        });
+        };
+        enqueueMeetingQuestions(meetingQuestions);
+        scheduleMeetingQuestionQueue(queueOptions);
       }
     }
   } catch (error) {
@@ -1577,8 +1597,7 @@ async function startListeningSession() {
   }
   transcriptionPausedUntil = 0;
   meetingListening = true;
-  meetingQuestionQueue = [];
-  meetingAnswerInProgress = false;
+  clearMeetingQuestionQueue();
   meetingLivePartialTranscript = "";
   renderLiveTranscript();
   meetingAudioSessionId = createMeetingAudioSessionId();
@@ -1782,8 +1801,7 @@ function clearChat({ clearDocuments = false } = {}) {
   history = [];
   meetingTranscript = [];
   displayedMeetingTranscript = [];
-  meetingQuestionQueue = [];
-  meetingAnswerInProgress = false;
+  clearMeetingQuestionQueue();
   recentDisplayedTranscriptHashes = [];
   recentTranscriptHashes = [];
   localStorage.removeItem(STORAGE_KEYS.messages);
@@ -1813,8 +1831,7 @@ function loadState() {
   messages = [];
   meetingTranscript = [];
   displayedMeetingTranscript = [];
-  meetingQuestionQueue = [];
-  meetingAnswerInProgress = false;
+  clearMeetingQuestionQueue();
   recentDisplayedTranscriptHashes = [];
   recentTranscriptHashes = [];
 
