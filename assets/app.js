@@ -1051,6 +1051,10 @@ function cleanMeetingQuestionCandidate(text) {
     .trim();
 }
 
+function startsWithQuestionSignal(text) {
+  return /^(what|why|how|when|where|who|which|can|could|would|should|do|does|did|is|are|was|were|will|shall|tell|explain|describe|summarize|compare|show|give|find|list|calculate|analyze)\b/i.test(cleanTranscript(text));
+}
+
 function splitMeetingTranscriptQuestions(text) {
   const cleanText = cleanTranscript(text);
   if (!cleanText) {
@@ -1069,6 +1073,9 @@ function splitMeetingTranscriptQuestions(text) {
     if (words.length < 3) {
       continue;
     }
+    if (!startsWithQuestionSignal(candidate)) {
+      continue;
+    }
     if (!shouldAnswerMeetingTranscript(candidate)) {
       continue;
     }
@@ -1077,7 +1084,10 @@ function splitMeetingTranscriptQuestions(text) {
     }
   }
 
-  return questions.length ? questions : (shouldAnswerMeetingTranscript(cleanText) ? [cleanText] : []);
+  if (questions.length) {
+    return questions;
+  }
+  return shouldAnswerMeetingTranscript(cleanText) && startsWithQuestionSignal(cleanText) ? [cleanText] : [];
 }
 
 function enqueueMeetingQuestions(questions) {
@@ -1121,6 +1131,11 @@ async function processMeetingQuestionQueue(options = {}) {
   const meetingQuestion = meetingQuestionQueue.shift();
   meetingAnswerInProgress = true;
   lastMeetingAnswerText = meetingQuestion.toLowerCase();
+  logAudioStage({
+    stage: "queued-question",
+    question: meetingQuestion,
+    queued: meetingQuestionQueue.length
+  });
   try {
     await answerQuestion(meetingQuestion, {
       fromMeetingAudio: true,
