@@ -279,6 +279,24 @@ def get_meeting_stt_provider() -> str:
     return "vosk"
 
 
+def is_no_speech_transcript(text: str) -> bool:
+    normalized = re.sub(r"[^a-z\s]", " ", text.lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized:
+        return True
+
+    no_speech_markers = [
+        "cannot fulfill this request",
+        "cannot transcribe",
+        "can not transcribe",
+        "no clear english speech",
+        "no clear speech",
+        "audio provided contains no",
+        "unable to transcribe",
+    ]
+    return any(marker in normalized for marker in no_speech_markers)
+
+
 def transcribe_audio_with_gemini(audio_bytes: bytes, mime_type: str = "audio/wav") -> dict:
     global GEMINI_STT_CLIENT
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
@@ -297,11 +315,14 @@ def transcribe_audio_with_gemini(audio_bytes: bytes, mime_type: str = "audio/wav
         model=model,
         contents=[
             "Transcribe only the clearly spoken English words in this meeting audio. "
-            "Return only the transcript text. If no speech is clear, return an empty string.",
+            "Return only the transcript text. If no speech is clear, return exactly: NO_CLEAR_SPEECH",
             types.Part.from_bytes(data=audio_bytes, mime_type=mime_type or "audio/wav"),
         ],
     )
     transcript = clean_transcript((getattr(response, "text", "") or "").strip())
+    if transcript.upper() == "NO_CLEAR_SPEECH" or is_no_speech_transcript(transcript):
+        transcript = ""
+
     return {
         "speechDetected": bool(transcript),
         "language": "english" if transcript else "unknown",
@@ -624,12 +645,9 @@ async def transcribe_meeting_audio(
             try:
                 result = transcribe_audio_with_gemini(audio_bytes, "audio/wav")
             except Exception as gemini_exc:
-                logger.warning("Gemini meeting transcription failed; falling back to Vosk: %s", gemini_exc)
-                result = transcribe_streaming_audio(audio_bytes, session_id, final_chunk=final_chunk)
-                result["model"] = f'{result["model"]}+gemini-fallback'
+                raise RuntimeError(f"Gemini meeting transcription unavailable: {gemini_exc}") from gemini_exc
         elif meeting_stt_provider == "gemini":
-            result = transcribe_streaming_audio(audio_bytes, session_id, final_chunk=final_chunk)
-            result["model"] = f'{result["model"]}+gemini-unavailable'
+            raise RuntimeError("Gemini meeting transcription is not configured.")
         else:
             result = transcribe_streaming_audio(audio_bytes, session_id, final_chunk=final_chunk)
 

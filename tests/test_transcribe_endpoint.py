@@ -21,6 +21,9 @@ def test_transcribe_endpoint_skips_transient_stt_errors(monkeypatch):
         raise RuntimeError("upstream unavailable")
 
     monkeypatch.setenv("ORBYNE_MEETING_STT_PROVIDER", "vosk")
+    monkeypatch.delenv("AI_PROVIDER", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.setattr(app, "transcribe_streaming_audio", fail_transcription)
 
     client = TestClient(app.app)
@@ -59,6 +62,9 @@ def test_transcribe_endpoint_returns_partial_streaming_text(monkeypatch):
         }
 
     monkeypatch.setenv("ORBYNE_MEETING_STT_PROVIDER", "vosk")
+    monkeypatch.delenv("AI_PROVIDER", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.setattr(app, "transcribe_streaming_audio", partial_transcription)
 
     client = TestClient(app.app)
@@ -81,3 +87,38 @@ def test_transcribe_endpoint_returns_partial_streaming_text(monkeypatch):
     assert payload["transcript"] == "what is"
     assert payload["isFinal"] is False
     assert payload["discarded"] is False
+
+
+def test_transcribe_endpoint_does_not_fallback_to_vosk_when_gemini_fails(monkeypatch):
+    def fail_gemini(*args, **kwargs):
+        raise RuntimeError("503 UNAVAILABLE")
+
+    def fail_if_vosk_called(*args, **kwargs):
+        raise AssertionError("Vosk fallback should not run for Gemini-only transcription.")
+
+    monkeypatch.setenv("AI_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("ORBYNE_MEETING_STT_PROVIDER", "gemini")
+    monkeypatch.setattr(app, "transcribe_audio_with_gemini", fail_gemini)
+    monkeypatch.setattr(app, "transcribe_streaming_audio", fail_if_vosk_called)
+
+    client = TestClient(app.app)
+    response = client.post(
+        "/transcribe-audio",
+        files={"file": ("chunk.wav", wav_bytes(), "audio/wav")},
+        data={
+            "language": "auto",
+            "session_id": "meeting-1",
+            "chunk_number": "1",
+            "duration": "0.1",
+            "sample_rate": "16000",
+            "audio_energy": "0.01",
+            "voice_activity": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["discarded"] is True
+    assert payload["reason"] == "stt_unavailable"
+    assert payload["model"] == "speech-to-text"

@@ -14,6 +14,17 @@ class FakeGeminiClient:
     models = FakeModels()
 
 
+class FakeNoSpeechModels:
+    def generate_content(self, model, contents):
+        return types.SimpleNamespace(
+            text="I'm sorry, I cannot fulfill this request. The audio provided contains no clear English speech for me to transcribe"
+        )
+
+
+class FakeNoSpeechGeminiClient:
+    models = FakeNoSpeechModels()
+
+
 def test_transcribe_audio_with_gemini_returns_clean_transcript(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.delenv("GEMINI_STT_MODEL", raising=False)
@@ -24,6 +35,17 @@ def test_transcribe_audio_with_gemini_returns_clean_transcript(monkeypatch):
     assert result["transcript"] == "What is the renewal price?"
     assert result["speechDetected"] is True
     assert result["model"] == "gemini/gemini-2.5-flash-lite"
+
+
+def test_transcribe_audio_with_gemini_discards_no_speech_message(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(app, "GEMINI_STT_CLIENT", FakeNoSpeechGeminiClient())
+
+    result = app.transcribe_audio_with_gemini(b"fake-wav", "audio/wav")
+
+    assert result["transcript"] == ""
+    assert result["speechDetected"] is False
+    assert result["iso639_1"] == "unknown"
 
 
 def test_transcribe_audio_with_gemini_requires_api_key(monkeypatch):
